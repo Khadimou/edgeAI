@@ -2,11 +2,14 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from passlib.context import CryptContext
 
 from app.core.deps import get_db
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.db.models import User
 from app.models.schemas import RegisterRequest, LoginRequest, TokenResponse, RefreshRequest
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -20,6 +23,7 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
     user = User(
         email=payload.email,
         name=payload.name,
+        hashed_password=pwd_context.hash(payload.password),
         referral_code=secrets.token_urlsafe(8),
     )
     db.add(user)
@@ -37,7 +41,7 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
-    if not user:
+    if not user or not user.hashed_password or not pwd_context.verify(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Identifiants incorrects")
 
     return TokenResponse(

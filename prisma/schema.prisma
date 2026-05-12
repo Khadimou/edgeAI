@@ -57,9 +57,10 @@ enum EventType {
 }
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  supabaseId    String?  @unique @map("supabase_id")
+  id             String   @id @default(cuid())
+  email          String   @unique
+  hashedPassword String?  @map("hashed_password")
+  supabaseId     String?  @unique @map("supabase_id")
   name          String?
   plan          Plan     @default(FREE)
   bankroll      Float    @default(0)

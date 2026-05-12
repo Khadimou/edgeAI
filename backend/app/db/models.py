@@ -78,6 +78,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: secrets.token_urlsafe(16))
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    hashed_password: Mapped[Optional[str]] = mapped_column(String)
     supabase_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
     name: Mapped[Optional[str]] = mapped_column(String)
     plan: Mapped[str] = mapped_column(Enum("FREE", "PRO", "ELITE", name="Plan", create_type=False), default="FREE")
