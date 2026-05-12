@@ -20,8 +20,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const { data: token } = await authApi.login(email, password);
-      const { data: user } = await authApi.me(token.access_token);
-      setAuth(user, token.access_token, token.refresh_token);
+      setAuth(token.user, token.access_token, token.refresh_token);
       router.push("/dashboard");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;

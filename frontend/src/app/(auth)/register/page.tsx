@@ -30,8 +30,7 @@ function RegisterForm() {
     setLoading(true);
     try {
       const { data: token } = await authApi.register(email, password, name);
-      const { data: user } = await authApi.me(token.access_token);
-      setAuth(user, token.access_token, token.refresh_token);
+      setAuth(token.user, token.access_token, token.refresh_token);
       router.push("/onboarding");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;

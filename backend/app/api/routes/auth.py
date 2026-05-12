@@ -8,6 +8,7 @@ from app.core.deps import get_db
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.db.models import User
 from app.models.schemas import RegisterRequest, LoginRequest, TokenResponse, RefreshRequest
+from app.api.routes.users import _user_to_dict
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -34,6 +35,7 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
         access_token=create_access_token({"sub": user.id}),
         refresh_token=create_refresh_token({"sub": user.id}),
         user_id=user.id,
+        user=_user_to_dict(user),
     )
 
 
@@ -48,6 +50,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         access_token=create_access_token({"sub": user.id}),
         refresh_token=create_refresh_token({"sub": user.id}),
         user_id=user.id,
+        user=_user_to_dict(user),
     )
 
 
