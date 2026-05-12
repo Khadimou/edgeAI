@@ -36,7 +36,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://edgeai:edgeai_secret@postgres:5432/edgeai
+      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
       SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_prod}
       SUPABASE_URL: ${SUPABASE_URL:-}
@@ -61,7 +61,7 @@ services:
       context: ./ml
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql://edgeai:edgeai_secret@postgres:5432/edgeai
+      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
       FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
       ODDS_API_KEY: ${ODDS_API_KEY:-}
