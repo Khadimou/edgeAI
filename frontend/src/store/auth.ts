@@ -7,12 +7,12 @@ export interface User {
   name: string | null;
   plan: "FREE" | "PRO" | "ELITE";
   bankroll: number;
-  riskProfile: "CONSERVATIVE" | "MODERATE" | "AGGRESSIVE";
-  kellyFraction: number;
-  maxBetsPerDay: number;
-  alertsEnabled: boolean;
-  referralCode: string | null;
-  createdAt: string;
+  risk_profile: "CONSERVATIVE" | "MODERATE" | "AGGRESSIVE";
+  kelly_fraction: number;
+  max_bets_per_day: number;
+  alerts_enabled: boolean;
+  referral_code: string | null;
+  created_at: string;
 }
 
 interface AuthState {

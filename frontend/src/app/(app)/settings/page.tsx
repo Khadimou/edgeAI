@@ -40,10 +40,10 @@ export default function SettingsPage() {
   const qc = useQueryClient();
 
   const [bankroll, setBankroll] = useState(user?.bankroll.toString() ?? "");
-  const [riskProfile, setRiskProfile] = useState<RiskProfileValue>((user?.riskProfile as RiskProfileValue) ?? "MODERATE");
-  const [kellyFraction, setKellyFraction] = useState(user?.kellyFraction || 0.5);
-  const [alertsEnabled, setAlertsEnabled] = useState(user?.alertsEnabled ?? true);
-  const [maxBets, setMaxBets] = useState(user?.maxBetsPerDay || 3);
+  const [riskProfile, setRiskProfile] = useState<RiskProfileValue>((user?.risk_profile as RiskProfileValue) ?? "MODERATE");
+  const [kellyFraction, setKellyFraction] = useState(user?.kelly_fraction || 0.5);
+  const [alertsEnabled, setAlertsEnabled] = useState(user?.alerts_enabled ?? true);
+  const [maxBets, setMaxBets] = useState(user?.max_bets_per_day || 3);
   const [saved, setSaved] = useState(false);
 
   const { mutate: save, isPending } = useMutation({
@@ -58,10 +58,10 @@ export default function SettingsPage() {
     onSuccess: ({ data }) => {
       updateUser({
         bankroll: data.bankroll,
-        riskProfile: data.risk_profile,
-        kellyFraction: data.kelly_fraction,
-        alertsEnabled: data.alerts_enabled,
-        maxBetsPerDay: data.max_bets_per_day,
+        risk_profile: data.risk_profile,
+        kelly_fraction: data.kelly_fraction,
+        alerts_enabled: data.alerts_enabled,
+        max_bets_per_day: data.max_bets_per_day,
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -231,7 +231,7 @@ export default function SettingsPage() {
         <h2 className="font-semibold mb-3">Compte</h2>
         <div className="text-sm text-gray-400 space-y-2">
           <p>Email : <span className="text-gray-200">{user?.email}</span></p>
-          <p>Code parrainage : <span className="font-mono text-brand-400">{user?.referralCode || "—"}</span></p>
+          <p>Code parrainage : <span className="font-mono text-brand-400">{user?.referral_code || "—"}</span></p>
           <p className="text-xs mt-2">
             Vos données sont exportables et supprimables conformément au RGPD (Art. 17 & 20).{" "}
             <a href="mailto:privacy@edgeai.fr" className="text-brand-400 hover:underline">Contacter le DPO</a>

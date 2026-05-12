@@ -40,8 +40,8 @@ export default function OnboardingPage() {
       });
       updateUser({
         bankroll: parseFloat(bankroll),
-        riskProfile: riskProfile as "CONSERVATIVE" | "MODERATE" | "AGGRESSIVE",
-        kellyFraction,
+        risk_profile: riskProfile as "CONSERVATIVE" | "MODERATE" | "AGGRESSIVE",
+        kelly_fraction: kellyFraction,
       });
       router.push("/dashboard");
     } catch {
