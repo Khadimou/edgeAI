@@ -1,0 +1,100 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: edgeai
+      POSTGRES_PASSWORD: edgeai_secret
+      POSTGRES_DB: edgeai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edgeai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://edgeai:edgeai_secret@postgres:5432/edgeai
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_prod}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
+      ODDS_API_KEY: ${ODDS_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./ml:/ml
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  ml_worker:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://edgeai:edgeai_secret@postgres:5432/edgeai
+      REDIS_URL: redis://redis:6379
+      FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
+      ODDS_API_KEY: ${ODDS_API_KEY:-}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-sqlite:///mlflow.db}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./ml:/app
+      - ml_artifacts:/artifacts
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
+  redis_data:
+  ml_artifacts:

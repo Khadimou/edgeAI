@@ -1,0 +1,63 @@
+# Claude Code
+.claude/
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# ML artifacts
+ml/models/*.pkl
+ml/models/*.joblib
+ml/*.db
+mlflow.db
+mlruns/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Docker volumes (local data)
+postgres_data/
+redis_data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Prisma (generated)
+node_modules/.prisma/

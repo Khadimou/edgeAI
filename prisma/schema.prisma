@@ -1,0 +1,211 @@
+// Prisma est utilisé uniquement pour la gestion du schéma (prisma push / prisma migrate).
+// Le backend Python utilise SQLAlchemy + asyncpg pour accéder à la base.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  PRO
+  ELITE
+}
+
+enum RiskProfile {
+  CONSERVATIVE
+  MODERATE
+  AGGRESSIVE
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  POSTPONED
+  CANCELLED
+}
+
+enum BetStatus {
+  PENDING
+  WON
+  LOST
+  VOID
+  CASHOUT
+}
+
+enum BetOutcome {
+  HOME
+  DRAW
+  AWAY
+  OVER
+  UNDER
+}
+
+enum EventType {
+  DEPOSIT
+  WITHDRAWAL
+  BET_PLACED
+  BET_WON
+  BET_LOST
+  BET_VOID
+  SUBSCRIPTION_CREDIT
+  REFERRAL_BONUS
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  supabaseId    String?  @unique @map("supabase_id")
+  name          String?
+  plan          Plan     @default(FREE)
+  bankroll      Float    @default(0)
+  riskProfile   RiskProfile @default(MODERATE)
+  kellyFraction Float    @default(0.25) @map("kelly_fraction")
+  maxBetsPerDay Int      @default(3) @map("max_bets_per_day")
+  alertsEnabled Boolean  @default(true) @map("alerts_enabled")
+  stripeCustomerId String? @unique @map("stripe_customer_id")
+  stripeSubscriptionId String? @unique @map("stripe_subscription_id")
+  referralCode  String?  @unique @map("referral_code")
+  referredBy    String?  @map("referred_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  recommendations Recommendation[]
+  bets            Bet[]
+  bankrollHistory BankrollHistory[]
+
+  @@map("users")
+}
+
+model Match {
+  id           String      @id @default(cuid())
+  externalId   String      @unique @map("external_id")
+  league       String
+  season       String
+  homeTeam     String      @map("home_team")
+  awayTeam     String      @map("away_team")
+  matchDate    DateTime    @map("match_date")
+  status       MatchStatus @default(SCHEDULED)
+  homeScore    Int?        @map("home_score")
+  awayScore    Int?        @map("away_score")
+  homeOdds     Float?      @map("home_odds")
+  drawOdds     Float?      @map("draw_odds")
+  awayOdds     Float?      @map("away_odds")
+  venue        String?
+  round        String?
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  predictions     Prediction[]
+  recommendations Recommendation[]
+  bets            Bet[]
+
+  @@index([matchDate])
+  @@index([status])
+  @@map("matches")
+}
+
+model Prediction {
+  id           String   @id @default(cuid())
+  matchId      String   @map("match_id")
+  modelVersion String   @map("model_version")
+  probHome     Float    @map("prob_home")
+  probDraw     Float    @map("prob_draw")
+  probAway     Float    @map("prob_away")
+  confidence   Float
+  shapValues   Json?    @map("shap_values")
+  features     Json?
+  computedAt   DateTime @default(now()) @map("computed_at")
+
+  match Match @relation(fields: [matchId], references: [id])
+
+  @@index([matchId])
+  @@index([computedAt])
+  @@map("predictions")
+}
+
+model Recommendation {
+  id           String     @id @default(cuid())
+  userId       String     @map("user_id")
+  matchId      String     @map("match_id")
+  outcome      BetOutcome
+  edge         Float
+  kellyStake   Float      @map("kelly_stake")
+  recommendedAmount Float @map("recommended_amount")
+  odds         Float
+  strategy     String?
+  expiresAt    DateTime?  @map("expires_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id])
+  match Match @relation(fields: [matchId], references: [id])
+  bets  Bet[]
+
+  @@index([userId])
+  @@index([matchId])
+  @@index([createdAt])
+  @@map("recommendations")
+}
+
+model Bet {
+  id               String     @id @default(cuid())
+  userId           String     @map("user_id")
+  matchId          String     @map("match_id")
+  recommendationId String?    @map("recommendation_id")
+  outcome          BetOutcome
+  amount           Float
+  odds             Float
+  status           BetStatus  @default(PENDING)
+  profitLoss       Float?     @map("profit_loss")
+  bookmaker        String?
+  notes            String?
+  placedAt         DateTime   @default(now()) @map("placed_at")
+  settledAt        DateTime?  @map("settled_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  user           User            @relation(fields: [userId], references: [id])
+  match          Match           @relation(fields: [matchId], references: [id])
+  recommendation Recommendation? @relation(fields: [recommendationId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([placedAt])
+  @@map("bets")
+}
+
+model BankrollHistory {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  amount      Float
+  balance     Float
+  eventType   EventType @map("event_type")
+  referenceId String?   @map("reference_id")
+  timestamp   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([timestamp])
+  @@map("bankroll_history")
+}
+
+model ModelVersion {
+  id           String   @id @default(cuid())
+  version      String   @unique
+  accuracy     Float
+  logLoss      Float    @map("log_loss")
+  brierScore   Float    @map("brier_score")
+  featuresHash String   @map("features_hash")
+  artifactPath String   @map("artifact_path")
+  isDeployed   Boolean  @default(false) @map("is_deployed")
+  isShadow     Boolean  @default(false) @map("is_shadow")
+  trainedAt    DateTime @default(now()) @map("trained_at")
+  deployedAt   DateTime? @map("deployed_at")
+  metadata     Json?
+
+  @@map("model_versions")
+}
