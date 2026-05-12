@@ -63,7 +63,7 @@ model User {
   name          String?
   plan          Plan     @default(FREE)
   bankroll      Float    @default(0)
-  riskProfile   RiskProfile @default(MODERATE)
+  riskProfile   RiskProfile @default(MODERATE) @map("risk_profile")
   kellyFraction Float    @default(0.25) @map("kelly_fraction")
   maxBetsPerDay Int      @default(3) @map("max_bets_per_day")
   alertsEnabled Boolean  @default(true) @map("alerts_enabled")
