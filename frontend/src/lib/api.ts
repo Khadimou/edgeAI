@@ -46,7 +46,8 @@ export const authApi = {
     api.post("/auth/register", { email, password, name }),
   login: (email: string, password: string) =>
     api.post("/auth/login", { email, password }),
-  me: () => api.get("/user/me"),
+  me: (accessToken?: string) =>
+    api.get("/user/me", accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined),
   updateProfile: (data: Record<string, unknown>) => api.post("/user/profile", data),
 };
 
