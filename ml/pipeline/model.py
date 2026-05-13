@@ -112,7 +112,7 @@ class EdgeAIModel:
             "brier_score": round(bs, 4),
             "features_hash": features_hash,
             "n_samples": len(X),
-            "passes_threshold": ll < MAX_LOG_LOSS and acc > MIN_ACCURACY and bs < MAX_BRIER_SCORE,
+            "passes_threshold": bool(ll < MAX_LOG_LOSS and acc > MIN_ACCURACY and bs < MAX_BRIER_SCORE),
         }
 
     def predict(self, features: MatchFeatures) -> dict:
