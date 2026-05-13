@@ -9,4 +9,5 @@ asyncpg==0.30.0
 httpx==0.28.0
 python-dotenv==1.0.1
 structlog==24.4.0
-mlflow==2.17.2
+# mlflow est optionnel (tracking expériences) — incompatible Python 3.13
+# pip install mlflow si Python <= 3.12

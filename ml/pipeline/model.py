@@ -11,8 +11,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import shap
-import mlflow
-import mlflow.xgboost
+
+try:
+    import mlflow
+    import mlflow.xgboost
+    _MLFLOW_AVAILABLE = True
+except ImportError:
+    _MLFLOW_AVAILABLE = False
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import log_loss, brier_score_loss, accuracy_score
@@ -156,29 +161,27 @@ class EdgeAIModel:
 
 
 def train_and_log(X: np.ndarray, y: np.ndarray, tracking_uri: str | None = None) -> dict:
-    """Entraîne, log dans MLflow, retourne les métriques."""
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
+    """Entraîne avec MLflow si disponible, sinon entraîne directement."""
+    model = EdgeAIModel()
+    metrics = model.train(X, y)
 
-    mlflow.set_experiment("edgeai_football_predictions")
+    if _MLFLOW_AVAILABLE:
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment("edgeai_football_predictions")
+        with mlflow.start_run():
+            mlflow.log_metrics({
+                "log_loss": metrics["log_loss"],
+                "accuracy": metrics["accuracy"],
+                "brier_score": metrics["brier_score"],
+            })
+            mlflow.log_param("n_samples", metrics["n_samples"])
+            mlflow.log_param("version", metrics["version"])
+            if metrics["passes_threshold"]:
+                artifact_path = model.save()
+                mlflow.log_artifact(str(artifact_path))
+                mlflow.set_tag("status", "promoted")
+            else:
+                mlflow.set_tag("status", "rejected")
 
-    with mlflow.start_run():
-        model = EdgeAIModel()
-        metrics = model.train(X, y)
-
-        mlflow.log_metrics({
-            "log_loss": metrics["log_loss"],
-            "accuracy": metrics["accuracy"],
-            "brier_score": metrics["brier_score"],
-        })
-        mlflow.log_param("n_samples", metrics["n_samples"])
-        mlflow.log_param("version", metrics["version"])
-
-        if metrics["passes_threshold"]:
-            artifact_path = model.save()
-            mlflow.log_artifact(str(artifact_path))
-            mlflow.set_tag("status", "promoted")
-        else:
-            mlflow.set_tag("status", "rejected")
-
-        return {**metrics, "model": model if metrics["passes_threshold"] else None}
+    return {**metrics, "model": model if metrics["passes_threshold"] else None}
