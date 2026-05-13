@@ -55,6 +55,19 @@ class FootballDataClient:
             log.error("football_data_recent_error", league=league_code, error=str(e))
             return []
 
+    async def get_season_matches(self, league_code: str, season: int) -> list[dict]:
+        """Récupère tous les matchs terminés d'une saison (ex: season=2024 = 2024-25)."""
+        try:
+            resp = await self._client.get(
+                f"/competitions/{league_code}/matches",
+                params={"season": season, "status": "FINISHED"},
+            )
+            resp.raise_for_status()
+            return resp.json().get("matches", [])
+        except Exception as e:
+            log.error("football_data_season_error", league=league_code, season=season, error=str(e))
+            return []
+
     async def close(self):
         await self._client.aclose()
 
