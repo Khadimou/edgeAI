@@ -162,11 +162,10 @@ def save_model(model: EdgeAIModel, metrics: dict):
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
 
-    # Symlink latest pour le scheduler
+    # Copie vers model_latest.joblib (symlink requiert droits admin sur Windows)
+    import shutil
     latest = ARTIFACTS_DIR / "model_latest.joblib"
-    if latest.exists() or latest.is_symlink():
-        latest.unlink()
-    latest.symlink_to(path.name)
+    shutil.copy2(path, latest)
 
     return path
 

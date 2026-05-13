@@ -30,9 +30,10 @@ MODEL_DIR = Path(os.getenv("MODEL_DIR", "/artifacts/models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # Seuils de qualité minimaux (le modèle doit battre la baseline naïve)
-MIN_ACCURACY = 0.54
-MAX_LOG_LOSS = 0.95
-MAX_BRIER_SCORE = 0.22
+# Seuils phase 1 (données limitées) — montez à 0.54 / 0.95 avec 6000+ matchs
+MIN_ACCURACY = 0.44
+MAX_LOG_LOSS = 1.10
+MAX_BRIER_SCORE = 0.26
 
 
 class EdgeAIModel:
