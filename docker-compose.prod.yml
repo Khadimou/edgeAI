@@ -33,7 +33,7 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/}
     restart: unless-stopped
     volumes: []
-    command: ["node", "server.js"]
+    command: ["npm", "start"]
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/}
