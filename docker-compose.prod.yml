@@ -5,7 +5,6 @@
 # - Frontend en build optimisé (Next.js standalone)
 # - Pas de volume mount du code (image figée)
 # - Pas de --reload sur uvicorn
-# - Ports limités (seul backend:8000 et frontend:3000 exposés)
 # - Postgres LOCAL désactivé (on utilise Prisma cloud via DATABASE_URL)
 
 services:
@@ -19,6 +18,10 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes: []
+    # Override depends_on : pas de postgres en prod (Prisma cloud)
+    depends_on:
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
@@ -44,6 +47,10 @@ services:
 
   ml_worker:
     restart: unless-stopped
+    # Override depends_on : pas de postgres en prod
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ./ml/artifacts:/app/artifacts
       - ./ml/data:/app/data
