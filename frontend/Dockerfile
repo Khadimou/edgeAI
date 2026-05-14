@@ -15,6 +15,8 @@ ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+# Limite mémoire Node (~3GB) pour éviter OOM sur petits VPS
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN npm run build
 
 FROM node:20-alpine AS production
