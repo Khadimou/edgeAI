@@ -1,22 +1,4 @@
-version: "3.9"
-
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: edgeai
-      POSTGRES_PASSWORD: edgeai_secret
-      POSTGRES_DB: edgeai
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U edgeai"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     ports:
@@ -47,8 +29,6 @@ services:
       ODDS_API_KEY: ${ODDS_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -69,8 +49,6 @@ services:
       # Serie A : per-league model (validé par backtest +5.87% vs -1.5% global)
       PER_LEAGUE_MODEL_LEAGUES: "Serie A"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -96,5 +74,4 @@ services:
       - /app/node_modules
 
 volumes:
-  postgres_data:
   redis_data:
