@@ -138,10 +138,18 @@ def _build_email_html(bets: list[dict], app_url: str) -> str:
     # Tri par date puis edge
     bets = sorted(bets, key=lambda b: (b["match_date"] or "", -b["edge"]))
 
+    # Labels marchés lisibles (pas de jargon technique)
+    market_labels = {
+        "1X2": ("⚽", "Résultat", "#dbeafe", "#1e40af"),
+        "OU_2_5": ("🎯", "Buts", "#f3e8ff", "#6b21a8"),
+        "AH": ("📈", "Handicap", "#ccfbf1", "#115e59"),
+    }
     rows_html = []
     for b in bets:
         edge_pct = b["edge"] * 100
-        market_emoji = {"1X2": "⚽", "OU_2_5": "🎯", "AH": "📈"}.get(b["market"], "⚽")
+        emoji, market_label, bg_color, text_color = market_labels.get(
+            b["market"], ("⚽", b["market"], "#dbeafe", "#1e40af")
+        )
         date_short = (b["match_date"] or "")[:16].replace("T", " ")
         match_url = f"{app_url}/match/{b['match_id']}"
         rows_html.append(f"""
@@ -152,8 +160,8 @@ def _build_email_html(bets: list[dict], app_url: str) -> str:
             <div style="color:#9ca3af;font-size:12px">{b['league']}</div>
           </td>
           <td style="padding:12px 8px">
-            <span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:12px">
-              {market_emoji} {b['market']}
+            <span style="background:{bg_color};color:{text_color};padding:3px 10px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap">
+              {emoji} {market_label}
             </span>
           </td>
           <td style="padding:12px 8px;font-size:13px"><strong>{b['label']}</strong></td>
@@ -163,12 +171,13 @@ def _build_email_html(bets: list[dict], app_url: str) -> str:
         </tr>
         """)
 
+    plural = "s" if len(bets) > 1 else ""
     return f"""
     <html>
     <body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#f9fafb;margin:0;padding:20px">
       <div style="max-width:720px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;border:1px solid #e5e7eb">
-        <h1 style="margin:0 0 8px 0;color:#111827">⚡ {len(bets)} nouveau{'x' if len(bets)>1 else ''} value bet{'s' if len(bets)>1 else ''}</h1>
-        <p style="color:#6b7280;margin:0 0 24px 0">Edge entre 8% et 20%, sur les ligues whitelistées par le backtest.</p>
+        <h1 style="margin:0 0 8px 0;color:#111827">⚡ {len(bets)} pari{plural} à valeur détecté{plural}</h1>
+        <p style="color:#6b7280;margin:0 0 24px 0">L'IA a identifié {'ces opportunités' if len(bets) > 1 else 'cette opportunité'} sur {'les matchs' if len(bets) > 1 else 'le match'} à venir.</p>
         <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="background:#f3f4f6">
@@ -177,14 +186,17 @@ def _build_email_html(bets: list[dict], app_url: str) -> str:
               <th style="padding:10px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280">Marché</th>
               <th style="padding:10px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280">Pari</th>
               <th style="padding:10px 8px;text-align:right;font-size:11px;text-transform:uppercase;color:#6b7280">Cote</th>
-              <th style="padding:10px 8px;text-align:right;font-size:11px;text-transform:uppercase;color:#6b7280">Edge</th>
+              <th style="padding:10px 8px;text-align:right;font-size:11px;text-transform:uppercase;color:#6b7280">Avantage</th>
               <th></th>
             </tr>
           </thead>
           <tbody>{"".join(rows_html)}</tbody>
         </table>
-        <p style="color:#9ca3af;font-size:12px;margin-top:24px">
-          Notification générée par edgeAI · <a href="{app_url}/today" style="color:#9ca3af">Tout voir</a>
+        <p style="color:#9ca3af;font-size:12px;margin-top:24px;text-align:center">
+          <a href="{app_url}/today" style="color:#2563eb;text-decoration:none;font-weight:500">Voir tous les matchs du jour →</a>
+        </p>
+        <p style="color:#9ca3af;font-size:11px;margin-top:8px;text-align:center">
+          edgeAI · Pariez de manière responsable
         </p>
       </div>
     </body>
@@ -245,7 +257,11 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
         log.info("notifications_nothing_new", current=len(current_bets))
         return 0
 
-    subject = f"⚡ {len(new_bets)} value bet{'s' if len(new_bets) > 1 else ''} détecté{'s' if len(new_bets) > 1 else ''}"
+    n = len(new_bets)
+    if n == 1:
+        subject = f"⚡ 1 pari à valeur détecté"
+    else:
+        subject = f"⚡ {n} paris à valeur détectés"
     html = _build_email_html(new_bets, app_url)
     ok = await _send_brevo_email(api_key, from_email, to_email, subject, html)
     if ok:
