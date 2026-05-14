@@ -33,13 +33,20 @@ app = FastAPI(
     redoc_url=None,
 )
 
+import os
+
+# CORS : liste hardcodée + override via env CORS_ORIGINS (CSV)
+_default_origins = [
+    "http://localhost:3000",
+    "https://edgeai.fr",
+    "https://www.edgeai.fr",
+]
+_extra = os.getenv("CORS_ORIGINS", "")
+_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://edgeai.fr",
-        "https://www.edgeai.fr",
-    ],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
