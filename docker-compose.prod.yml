@@ -32,12 +32,15 @@ services:
       target: production
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/}
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
     restart: unless-stopped
     volumes: []
     command: ["npm", "start"]
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/}
+      NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+      SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
 
   ml_worker:
     restart: unless-stopped

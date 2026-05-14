@@ -22,4 +22,18 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+// Sentry wrapping (activé seulement si SENTRY_AUTH_TOKEN défini au build).
+// Sans token, Sentry SDK fonctionne quand même en runtime via les configs ts,
+// juste pas d'upload de source maps.
+const { withSentryConfig } = require("@sentry/nextjs");
+
+module.exports = process.env.SENTRY_AUTH_TOKEN
+  ? withSentryConfig(nextConfig, {
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      silent: true,
+      widenClientFileUpload: true,
+      hideSourceMaps: true,
+      disableLogger: true,
+    })
+  : nextConfig;
