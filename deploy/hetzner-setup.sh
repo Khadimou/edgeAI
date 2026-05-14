@@ -5,13 +5,13 @@
 #
 # Usage :
 #   1. ssh root@<vps_ip>
-#   2. bash <(curl -fsSL https://raw.githubusercontent.com/Khadimou/edgaAI/main/deploy/hetzner-setup.sh)
+#   2. bash <(curl -fsSL https://raw.githubusercontent.com/Khadimou/edgeAI/main/deploy/hetzner-setup.sh)
 #
 # Ou manuellement : copier ce fichier sur le VPS et `bash hetzner-setup.sh`
 # ─────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/Khadimou/edgaAI.git}"
+REPO_URL="${REPO_URL:-https://github.com/Khadimou/edgeAI.git}"
 APP_DIR="${APP_DIR:-/opt/edgeai}"
 APP_USER="${APP_USER:-edgeai}"
 

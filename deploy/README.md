@@ -23,7 +23,7 @@ ssh root@<vps_ip>
 Lance le script de setup (installe Docker, clone repo, configure firewall + systemd) :
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Khadimou/edgaAI/main/deploy/hetzner-setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/Khadimou/edgeAI/main/deploy/hetzner-setup.sh -o setup.sh
 bash setup.sh
 ```
 
