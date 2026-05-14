@@ -27,6 +27,7 @@ from .model import EdgeAIModel
 from .settle import settle_finished_bets
 from .drift import check_drift_and_rollback
 from .trainer import maybe_auto_retrain
+from .notifications import notify_new_value_bets
 import joblib
 
 log = structlog.get_logger()
@@ -400,6 +401,26 @@ async def run_pipeline():
             await maybe_auto_retrain(session)
 
             await session.commit()
+
+            # Notifications email Brevo des nouveaux value bets (après commit)
+            try:
+                from app.core.config import settings as backend_settings
+            except Exception:
+                # ml_worker tourne sans le backend, on importe les settings minimum
+                from types import SimpleNamespace
+                import os as _os
+                backend_settings = SimpleNamespace(
+                    value_bet_leagues=_os.getenv("VALUE_BET_LEAGUES", "Ligue 1,Bundesliga,Serie A").split(","),
+                    value_bet_ou_leagues=_os.getenv("VALUE_BET_OU_LEAGUES", "Premier League").split(","),
+                    value_bet_ah_leagues=_os.getenv("VALUE_BET_AH_LEAGUES", "Ligue 1,Premier League,Serie A").split(","),
+                )
+            async with async_session() as notif_session:
+                try:
+                    n_notified = await notify_new_value_bets(notif_session, redis, backend_settings)
+                    if n_notified:
+                        log.info("notifications_done", count=n_notified)
+                except Exception as e:
+                    log.error("notifications_error", error=str(e))
     finally:
         await football_client.close()
         await odds_client.close()

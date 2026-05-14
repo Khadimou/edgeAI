@@ -54,3 +54,11 @@ services:
       ODDS_API_KEY: ${ODDS_API_KEY}
       MODEL_DIR: /app/artifacts/models
       PER_LEAGUE_MODEL_LEAGUES: ${PER_LEAGUE_MODEL_LEAGUES:-Serie A}
+      # Notifications Brevo
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      NOTIFICATION_EMAIL_TO: ${NOTIFICATION_EMAIL_TO:-}
+      NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM:-}
+      APP_BASE_URL: ${APP_BASE_URL:-https://edgeai-betting.duckdns.org}
+      VALUE_BET_LEAGUES: ${VALUE_BET_LEAGUES:-Ligue 1,Bundesliga,Serie A}
+      VALUE_BET_OU_LEAGUES: ${VALUE_BET_OU_LEAGUES:-Premier League}
+      VALUE_BET_AH_LEAGUES: ${VALUE_BET_AH_LEAGUES:-Ligue 1,Premier League,Serie A}
