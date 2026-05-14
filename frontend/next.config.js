@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
   reactStrictMode: true,
   // Évite que des erreurs ESLint/TS résiduelles bloquent le build prod.
   // Le typecheck reste actif en dev via tsc côté éditeur.
