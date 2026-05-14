@@ -31,6 +31,29 @@ class Settings(BaseSettings):
 
     sentry_dsn: str = ""
 
+    # Whitelist des ligues pour value bets 1X2.
+    # - Ligue 1 + Bundesliga : modèle global 17k (Ligue 1 +22.1%, Bundesliga +3.3%)
+    # - Serie A : modèle per-league dédié (+5.87%, 157 paris, hit 36.3%)
+    value_bet_leagues: list[str] = ["Ligue 1", "Bundesliga", "Serie A"]
+
+    # Whitelist O/U 2.5 — issu du backtest sur le modèle 17k samples.
+    # Seule la Premier League reste profitable (+5.7%, 175 paris, hit 47.4%) avec
+    # le modèle entraîné sur la nouvelle base de 17k matchs.
+    value_bet_ou_leagues: list[str] = ["Premier League"]
+
+    # Whitelist Asian Handicap — backtest 2020-2025 (10609 matchs, edge 10-20%).
+    # Plus gros marché en volume : ~870 value bets/an.
+    # Serie A +5.8%, Ligue 1 +5.1%, Premier League +3.6% — 3 ligues profitables.
+    value_bet_ah_leagues: list[str] = ["Ligue 1", "Premier League", "Serie A"]
+
+    # Ligues qui utilisent leur modèle per-league plutôt que le global.
+    # Backtest a montré que seule Serie A en bénéficie (le global est meilleur ailleurs).
+    per_league_model_leagues: list[str] = ["Serie A"]
+
+    # Filtres value betting calibrés par le backtest (edge ∈ [8%, 20%] = sweet spot)
+    value_bet_edge_min: float = 0.08
+    value_bet_edge_max: float = 0.20
+
     class Config:
         env_file = ".env"
         case_sensitive = False

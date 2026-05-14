@@ -4,11 +4,18 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
-import { Target, ChevronRight, Lock } from "lucide-react";
-import { matchesApi, recsApi, bankrollApi } from "@/lib/api";
+import { Target, ChevronRight, Lock, History } from "lucide-react";
+import { matchesApi, recsApi, bankrollApi, betsApi } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
-import { formatCurrency, formatPercent, outcomeLabel, cn } from "@/lib/utils";
-import type { MatchSummary, Recommendation, BankrollStats } from "@/types/api";
+import { formatCurrency, formatPercent, outcomeLabel, pickedTeamLabel, betStatusColor, cn } from "@/lib/utils";
+import type { MatchSummary, Recommendation, BankrollStats, Bet } from "@/types/api";
+
+const STATUS_LABELS: Record<string, string> = {
+  PENDING: "En attente",
+  WON: "Gagné",
+  LOST: "Perdu",
+  VOID: "Annulé",
+};
 
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user);
@@ -30,6 +37,17 @@ export default function DashboardPage() {
   const { data: bankroll } = useQuery<BankrollStats>({
     queryKey: ["bankroll"],
     queryFn: () => bankrollApi.history().then((r) => r.data),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+  });
+
+  const { data: recentBets } = useQuery<Bet[]>({
+    queryKey: ["bets", "recent"],
+    queryFn: () => betsApi.list().then((r) => r.data.slice(0, 5)),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   return (
@@ -46,7 +64,7 @@ export default function DashboardPage() {
         <div className="stat-card">
           <div className="stat-label">Bankroll</div>
           <div className="stat-value text-brand-400">
-            {formatCurrency(user?.bankroll ?? 0)}
+            {bankroll ? formatCurrency(bankroll.current_balance) : formatCurrency(user?.bankroll ?? 0)}
           </div>
         </div>
         <div className="stat-card">
@@ -62,8 +80,10 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Opportunités</div>
-          <div className="stat-value text-yellow-400">{recsData?.length ?? 0}</div>
+          <div className="stat-label">Paris en cours</div>
+          <div className="stat-value text-yellow-400">
+            {recentBets?.filter((b) => b.status === "PENDING").length ?? 0}
+          </div>
         </div>
       </div>
 
@@ -95,6 +115,58 @@ export default function DashboardPage() {
           </div>
         )}
       </section>
+
+      {/* Paris récents */}
+      {(recentBets?.length ?? 0) > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Paris récents</h2>
+            <Link href="/history" className="text-sm text-brand-400 hover:underline flex items-center gap-1">
+              <History className="w-3.5 h-3.5" />
+              Tout voir
+            </Link>
+          </div>
+          <div className="space-y-2">
+            {recentBets!.map((bet) => (
+              <div key={bet.id} className="card flex items-center justify-between py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                    <span className={cn(
+                      "text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-800",
+                      betStatusColor(bet.status)
+                    )}>
+                      {STATUS_LABELS[bet.status] ?? bet.status}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-brand-600/20 text-brand-300 font-semibold truncate max-w-[180px]">
+                      → {pickedTeamLabel(bet.outcome, bet.match)}
+                    </span>
+                  </div>
+                  {bet.match && (
+                    <p className="text-sm font-medium truncate">
+                      <span className={cn(bet.outcome === "HOME" && "text-brand-300")}>{bet.match.home_team}</span>
+                      <span className="text-gray-500 mx-1">vs</span>
+                      <span className={cn(bet.outcome === "AWAY" && "text-brand-300")}>{bet.match.away_team}</span>
+                    </p>
+                  )}
+                  <p className="text-xs text-gray-500">
+                    {format(new Date(bet.placed_at), "d MMM HH:mm", { locale: fr })}
+                    {bet.bookmaker ? ` · ${bet.bookmaker}` : ""}
+                  </p>
+                </div>
+                <div className="text-right shrink-0 ml-4">
+                  <p className="font-semibold">{formatCurrency(bet.amount)}</p>
+                  <p className="text-xs text-gray-500">@ {bet.odds.toFixed(2)}</p>
+                  {bet.profit_loss != null && bet.status !== "PENDING" && (
+                    <p className={cn("text-xs font-bold", bet.profit_loss >= 0 ? "text-edge-green" : "text-edge-red")}>
+                      {bet.profit_loss >= 0 ? "+" : ""}{formatCurrency(bet.profit_loss)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Matchs à venir */}
       <section>

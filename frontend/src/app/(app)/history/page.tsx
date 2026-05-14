@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import { betsApi } from "@/lib/api";
-import { formatCurrency, outcomeLabel, betStatusColor, cn } from "@/lib/utils";
+import { formatCurrency, outcomeLabel, pickedTeamLabel, betStatusColor, cn } from "@/lib/utils";
 import type { Bet } from "@/types/api";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -87,11 +87,16 @@ export default function HistoryPage() {
 
 function BetRow({ bet, onUpdate }: { bet: Bet; onUpdate: () => void }) {
   const [updating, setUpdating] = useState(false);
+  const qc = useQueryClient();
 
   async function settle(status: string) {
     setUpdating(true);
     try {
       await betsApi.updateResult(bet.id, { status });
+      // P&L / bankroll / stats sont impactés → invalider pour rafraîchir
+      qc.invalidateQueries({ queryKey: ["bankroll"] });
+      qc.invalidateQueries({ queryKey: ["bets"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
       onUpdate();
     } finally {
       setUpdating(false);
@@ -102,18 +107,23 @@ function BetRow({ bet, onUpdate }: { bet: Bet; onUpdate: () => void }) {
     <div className="card">
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className={cn(
               "text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-800",
               betStatusColor(bet.status)
             )}>
               {STATUS_LABELS[bet.status] ?? bet.status}
             </span>
-            <span className="text-sm text-gray-400">{outcomeLabel(bet.outcome)}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-brand-600/20 text-brand-300 font-semibold">
+              Pari sur · {pickedTeamLabel(bet.outcome, bet.match)}
+            </span>
+            <span className="text-xs text-gray-500">({outcomeLabel(bet.outcome)})</span>
           </div>
           {bet.match && (
             <p className="font-semibold">
-              {bet.match.home_team} vs {bet.match.away_team}
+              <span className={cn(bet.outcome === "HOME" && "text-brand-300")}>{bet.match.home_team}</span>
+              <span className="text-gray-500 mx-1.5">vs</span>
+              <span className={cn(bet.outcome === "AWAY" && "text-brand-300")}>{bet.match.away_team}</span>
             </p>
           )}
           <p className="text-xs text-gray-500 mt-0.5">

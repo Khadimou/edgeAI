@@ -72,6 +72,9 @@ model User {
   stripeSubscriptionId String? @unique @map("stripe_subscription_id")
   referralCode  String?  @unique @map("referral_code")
   referredBy    String?  @map("referred_by")
+  goalAmount    Float?   @map("goal_amount")
+  goalTimeframeDays Int? @map("goal_timeframe_days")
+  goalStartDate DateTime? @map("goal_start_date")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
@@ -85,6 +88,7 @@ model User {
 model Match {
   id           String      @id @default(cuid())
   externalId   String      @unique @map("external_id")
+  sport        String      @default("FOOTBALL")
   league       String
   season       String
   homeTeam     String      @map("home_team")
@@ -93,9 +97,31 @@ model Match {
   status       MatchStatus @default(SCHEDULED)
   homeScore    Int?        @map("home_score")
   awayScore    Int?        @map("away_score")
+  htHomeScore  Int?        @map("ht_home_score")
+  htAwayScore  Int?        @map("ht_away_score")
+  homeYellowCards Int      @default(0) @map("home_yellow_cards")
+  awayYellowCards Int      @default(0) @map("away_yellow_cards")
+  homeRedCards Int         @default(0) @map("home_red_cards")
+  awayRedCards Int         @default(0) @map("away_red_cards")
   homeOdds     Float?      @map("home_odds")
   drawOdds     Float?      @map("draw_odds")
   awayOdds     Float?      @map("away_odds")
+  over25Odds   Float?      @map("over_25_odds")
+  under25Odds  Float?      @map("under_25_odds")
+  ahLine       Float?      @map("ah_line")
+  ahHomeOdds   Float?      @map("ah_home_odds")
+  ahAwayOdds   Float?      @map("ah_away_odds")
+  // Opening odds : capturées la 1ère fois où on voit les cotes (jamais modifiées ensuite)
+  // Permet de calculer le Closing Line Value (= preuve mathématique du model)
+  openingHomeOdds    Float? @map("opening_home_odds")
+  openingDrawOdds    Float? @map("opening_draw_odds")
+  openingAwayOdds    Float? @map("opening_away_odds")
+  openingOver25Odds  Float? @map("opening_over_25_odds")
+  openingUnder25Odds Float? @map("opening_under_25_odds")
+  openingAhLine      Float? @map("opening_ah_line")
+  openingAhHomeOdds  Float? @map("opening_ah_home_odds")
+  openingAhAwayOdds  Float? @map("opening_ah_away_odds")
+  openingCapturedAt  DateTime? @map("opening_captured_at")
   venue        String?
   round        String?
   createdAt    DateTime    @default(now()) @map("created_at")
@@ -107,6 +133,7 @@ model Match {
 
   @@index([matchDate])
   @@index([status])
+  @@index([sport])
   @@map("matches")
 }
 
@@ -117,6 +144,10 @@ model Prediction {
   probHome     Float    @map("prob_home")
   probDraw     Float    @map("prob_draw")
   probAway     Float    @map("prob_away")
+  probOver25   Float?   @map("prob_over_25")
+  probUnder25  Float?   @map("prob_under_25")
+  probAhHome   Float?   @map("prob_ah_home")
+  probAhAway   Float?   @map("prob_ah_away")
   confidence   Float
   shapValues   Json?    @map("shap_values")
   features     Json?

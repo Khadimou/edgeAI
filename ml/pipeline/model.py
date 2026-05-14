@@ -73,13 +73,13 @@ class EdgeAIModel:
             y_train, y_val = y[train_idx], y[val_idx]
 
             base = XGBClassifier(**xgb_params)
-            cal = CalibratedClassifierCV(base, method="isotonic", cv=3)
+            cal = CalibratedClassifierCV(base, method="sigmoid", cv=3)
             cal.fit(X_train, y_train)
             oof_preds[val_idx] = cal.predict_proba(X_val)
 
         # Entraînement final sur tout le jeu
         base_final = XGBClassifier(**xgb_params)
-        self.model = CalibratedClassifierCV(base_final, method="isotonic", cv=3)
+        self.model = CalibratedClassifierCV(base_final, method="sigmoid", cv=3)
         self.model.fit(X, y)
 
         # SHAP explainer sur le modèle de base XGBoost

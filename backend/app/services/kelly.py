@@ -15,7 +15,9 @@ KELLY_MULTIPLIERS = {
 }
 
 MAX_BET_FRACTION = 0.10
-MIN_EDGE_THRESHOLD = 0.03
+# Seuils calibrés par le backtest historique (edge ∈ [8%, 20%] = sweet spot)
+MIN_EDGE_THRESHOLD = 0.08
+MAX_EDGE_THRESHOLD = 0.20  # au-delà = hallucination (modèle mal calibré)
 
 
 @dataclass
@@ -58,7 +60,18 @@ def calculate_kelly(
             recommended_amount=0,
             edge=edge,
             is_value_bet=False,
-            reason=f"Pas de value bet — edge {edge:.1%} < seuil {MIN_EDGE_THRESHOLD:.1%}",
+            reason=f"Pas de value bet - edge {edge:.1%} < seuil {MIN_EDGE_THRESHOLD:.1%}",
+        )
+
+    # Edge "trop élevé" = signe de mauvaise calibration → on filtre
+    if edge > MAX_EDGE_THRESHOLD:
+        return KellyResult(
+            kelly_fraction=kelly_full,
+            adjusted_fraction=0,
+            recommended_amount=0,
+            edge=edge,
+            is_value_bet=False,
+            reason=f"Edge {edge:.1%} > {MAX_EDGE_THRESHOLD:.0%} (probable hallucination du modèle)",
         )
 
     # Kelly fractionnel selon profil de risque
@@ -77,7 +90,7 @@ def calculate_kelly(
         recommended_amount=recommended_amount,
         edge=edge,
         is_value_bet=True,
-        reason=f"Value bet — edge {edge:.1%}, Kelly {adjusted:.1%} de la bankroll",
+        reason=f"Value bet - edge {edge:.1%}, Kelly {adjusted:.1%} de la bankroll",
     )
 
 

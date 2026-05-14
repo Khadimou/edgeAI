@@ -65,7 +65,9 @@ services:
       REDIS_URL: redis://redis:6379
       FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
       ODDS_API_KEY: ${ODDS_API_KEY:-}
-      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-sqlite:///mlflow.db}
+      MODEL_DIR: /app/artifacts/models
+      # Serie A : per-league model (validé par backtest +5.87% vs -1.5% global)
+      PER_LEAGUE_MODEL_LEAGUES: "Serie A"
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,7 +75,6 @@ services:
         condition: service_healthy
     volumes:
       - ./ml:/app
-      - ml_artifacts:/artifacts
 
   frontend:
     build:
@@ -91,8 +92,9 @@ services:
       - backend
     volumes:
       - ./frontend:/app
+      - /app/.next
+      - /app/node_modules
 
 volumes:
   postgres_data:
   redis_data:
-  ml_artifacts:

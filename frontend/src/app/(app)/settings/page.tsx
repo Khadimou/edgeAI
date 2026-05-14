@@ -44,6 +44,8 @@ export default function SettingsPage() {
   const [kellyFraction, setKellyFraction] = useState(user?.kelly_fraction || 0.5);
   const [alertsEnabled, setAlertsEnabled] = useState(user?.alerts_enabled ?? true);
   const [maxBets, setMaxBets] = useState(user?.max_bets_per_day || 3);
+  const [goalAmount, setGoalAmount] = useState(user?.goal_amount?.toString() ?? "");
+  const [goalDays, setGoalDays] = useState(user?.goal_timeframe_days?.toString() ?? "30");
   const [saved, setSaved] = useState(false);
 
   const { mutate: save, isPending } = useMutation({
@@ -54,6 +56,9 @@ export default function SettingsPage() {
         kelly_fraction: kellyFraction,
         alerts_enabled: alertsEnabled,
         max_bets_per_day: maxBets,
+        goal_amount: goalAmount ? parseFloat(goalAmount) : null,
+        goal_timeframe_days: goalDays ? parseInt(goalDays) : null,
+        goal_start_date: (goalAmount && !user?.goal_amount) ? new Date().toISOString() : undefined,
       }),
     onSuccess: ({ data }) => {
       updateUser({
@@ -62,6 +67,9 @@ export default function SettingsPage() {
         kelly_fraction: data.kelly_fraction,
         alerts_enabled: data.alerts_enabled,
         max_bets_per_day: data.max_bets_per_day,
+        goal_amount: data.goal_amount,
+        goal_timeframe_days: data.goal_timeframe_days,
+        goal_start_date: data.goal_start_date,
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -111,6 +119,45 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* Objectif */}
+      <div className="card">
+        <h2 className="font-semibold mb-1">Mon objectif</h2>
+        <p className="text-xs text-gray-400 mb-4">Définissez un gain cible et un horizon pour recevoir un plan de mise personnalisé.</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Gain visé (€)</label>
+            <input
+              type="number"
+              className="input w-full"
+              placeholder="ex : 500"
+              value={goalAmount}
+              onChange={(e) => setGoalAmount(e.target.value)}
+              min="1"
+              step="50"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Horizon (jours)</label>
+            <select
+              className="input w-full"
+              value={goalDays}
+              onChange={(e) => setGoalDays(e.target.value)}
+            >
+              <option value="7">1 semaine</option>
+              <option value="14">2 semaines</option>
+              <option value="30">1 mois</option>
+              <option value="60">2 mois</option>
+              <option value="90">3 mois</option>
+            </select>
+          </div>
+        </div>
+        {goalAmount && parseFloat(goalAmount) > 0 && bankroll && parseFloat(bankroll) > 0 && (
+          <p className="text-xs text-brand-400 mt-3">
+            ROI nécessaire : +{((parseFloat(goalAmount) / parseFloat(bankroll)) * 100).toFixed(1)}% sur {goalDays} jours
+          </p>
+        )}
+      </div>
+
       {/* Bankroll */}
       <div className="card">
         <h2 className="font-semibold mb-4">Bankroll & Stratégie</h2>
@@ -119,16 +166,36 @@ export default function SettingsPage() {
             <label className="block text-sm font-medium mb-1.5">
               Bankroll totale (€)
             </label>
-            <input
-              type="number"
-              className="input max-w-xs"
-              value={bankroll}
-              onChange={(e) => setBankroll(e.target.value)}
-              min="0"
-              step="10"
-            />
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                className="input w-36"
+                value={bankroll}
+                onChange={(e) => setBankroll(e.target.value)}
+                min="0"
+                step="50"
+                placeholder="0"
+              />
+              <div className="flex gap-2">
+                {[100, 250, 500, 1000, 2000].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setBankroll(v.toString())}
+                    className={cn(
+                      "px-2.5 py-1 rounded text-xs font-medium border transition-colors",
+                      bankroll === v.toString()
+                        ? "border-brand-500 bg-brand-500/20 text-brand-400"
+                        : "border-gray-700 text-gray-400 hover:border-gray-600"
+                    )}
+                  >
+                    {v}€
+                  </button>
+                ))}
+              </div>
+            </div>
             <p className="text-xs text-gray-500 mt-1">
-              Montant total alloué aux paris. Sera utilisé pour calculer les mises Kelly.
+              Montant total alloué aux paris. Utilisé pour calculer les mises Kelly.
             </p>
           </div>
 

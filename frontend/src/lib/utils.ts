@@ -40,6 +40,16 @@ export function outcomeLabel(outcome: string): string {
   return map[outcome] || outcome;
 }
 
+export function pickedTeamLabel(
+  outcome: string,
+  match?: { home_team?: string | null; away_team?: string | null } | null,
+): string {
+  if (outcome === "HOME") return match?.home_team || "Domicile";
+  if (outcome === "AWAY") return match?.away_team || "Extérieur";
+  if (outcome === "DRAW") return "Match nul";
+  return outcomeLabel(outcome);
+}
+
 export function betStatusColor(status: string): string {
   const map: Record<string, string> = {
     WON: "text-edge-green",

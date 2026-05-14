@@ -23,12 +23,19 @@ build/
 venv/
 env/
 
-# ML artifacts
+# ML artifacts (large binary models, CSVs)
 ml/models/*.pkl
 ml/models/*.joblib
+ml/artifacts/
+ml/data/raw/
+ml/data/features/
+ml/venv/
 ml/*.db
 mlflow.db
 mlruns/
+
+# TypeScript build cache
+*.tsbuildinfo
 
 # Environment
 .env

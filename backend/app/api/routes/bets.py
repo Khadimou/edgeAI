@@ -24,10 +24,14 @@ async def create_bet(
     if user.bankroll < payload.amount:
         raise HTTPException(status_code=400, detail="Bankroll insuffisante")
 
+    rec_id = payload.recommendation_id
+    if rec_id and rec_id.startswith("temp_"):
+        rec_id = None
+
     bet = Bet(
         user_id=user.id,
         match_id=payload.match_id,
-        recommendation_id=payload.recommendation_id,
+        recommendation_id=rec_id,
         outcome=payload.outcome,
         amount=payload.amount,
         odds=payload.odds,

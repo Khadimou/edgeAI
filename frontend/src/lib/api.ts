@@ -59,6 +59,12 @@ export const matchesApi = {
     api.get(`/matches/${matchId}/analysis`),
 };
 
+// Today (multi-sport)
+export const todayApi = {
+  get: (sport: "FOOTBALL" | "NBA" = "FOOTBALL") =>
+    api.get("/today", { params: { sport } }),
+};
+
 // Recommendations
 export const recsApi = {
   list: (limit?: number) =>
@@ -82,4 +88,29 @@ export const bankrollApi = {
 // Stats
 export const statsApi = {
   performance: () => api.get("/stats/performance"),
+};
+
+// Model performance (live monitoring)
+export const modelApi = {
+  performance: (days: number = 30) =>
+    api.get("/model/performance", { params: { days } }),
+};
+
+// Backtest
+export type BacktestMarket = "FOOTBALL_1X2" | "FOOTBALL_OU" | "FOOTBALL_AH" | "NBA" | "NBA_TOTALS";
+export const backtestApi = {
+  latest: (market: BacktestMarket = "FOOTBALL_1X2") =>
+    api.get("/backtest/latest", { params: { market } }),
+};
+
+// Live tracking
+export type TrackingMarket = "ALL" | "FOOTBALL_1X2" | "FOOTBALL_OU" | "FOOTBALL_AH" | "NBA";
+export const trackingApi = {
+  live: (days: number = 60, market: TrackingMarket = "ALL") =>
+    api.get("/tracking/live", { params: { days, market } }),
+};
+
+// Admin observability
+export const adminApi = {
+  observability: () => api.get("/admin/observability"),
 };

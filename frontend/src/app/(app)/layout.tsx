@@ -5,22 +5,32 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import {
   LayoutDashboard,
-  TrendingUp,
+  Target,
   History,
   BarChart3,
   Wallet,
   Settings,
   LogOut,
-  Bell,
+  Flame,
+  Brain,
+  FlaskConical,
+  Activity,
+  ServerCog,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/today", label: "Aujourd'hui", icon: Flame, highlight: true },
+  { href: "/plan", label: "Mon Plan", icon: Target },
   { href: "/bankroll", label: "Bankroll", icon: Wallet },
   { href: "/history", label: "Historique", icon: History },
   { href: "/stats", label: "Stats", icon: BarChart3 },
+  { href: "/model", label: "Modèle IA", icon: Brain },
+  { href: "/tracking", label: "Live tracking", icon: Activity },
+  { href: "/backtest", label: "Backtest", icon: FlaskConical },
+  { href: "/admin", label: "Admin", icon: ServerCog },
   { href: "/settings", label: "Paramètres", icon: Settings },
 ];
 
@@ -56,21 +66,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 p-3 space-y-1">
-          {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                pathname === item.href || pathname.startsWith(item.href + "/")
-                  ? "bg-brand-600/20 text-brand-400"
-                  : "text-gray-400 hover:text-gray-100 hover:bg-gray-800"
-              )}
-            >
-              <item.icon className="w-4 h-4" />
-              {item.label}
-            </Link>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                  isActive
+                    ? item.highlight
+                      ? "bg-orange-500/20 text-orange-400"
+                      : "bg-brand-600/20 text-brand-400"
+                    : item.highlight
+                      ? "text-orange-400 hover:bg-orange-500/10"
+                      : "text-gray-400 hover:text-gray-100 hover:bg-gray-800"
+                )}
+              >
+                <item.icon className="w-4 h-4" />
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="p-3 border-t border-gray-800">

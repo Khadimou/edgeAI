@@ -12,6 +12,9 @@ export interface User {
   max_bets_per_day: number;
   alerts_enabled: boolean;
   referral_code: string | null;
+  goal_amount: number | null;
+  goal_timeframe_days: number | null;
+  goal_start_date: string | null;
   created_at: string;
 }
 

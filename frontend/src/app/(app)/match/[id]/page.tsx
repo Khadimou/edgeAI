@@ -1,20 +1,21 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import { ArrowLeft, TrendingUp, Info } from "lucide-react";
 import { matchesApi, betsApi } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
-import { formatCurrency, formatPercent, outcomeLabel, cn } from "@/lib/utils";
+import { formatCurrency, formatPercent, outcomeLabel, pickedTeamLabel, cn } from "@/lib/utils";
 import { useState } from "react";
 import type { MatchSummary, Prediction, Recommendation } from "@/types/api";
 
 export default function MatchPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
+  const qc = useQueryClient();
+  const { user, updateUser } = useAuthStore();
   const [placing, setPlacing] = useState(false);
   const [betAmount, setBetAmount] = useState("");
   const [bookmaker, setBookmaker] = useState("");
@@ -24,6 +25,11 @@ export default function MatchPage() {
     match: MatchSummary;
     prediction: Prediction | null;
     recommendation: Recommendation | null;
+    ou_recommendation: Recommendation | null;
+    ah_recommendation: (Recommendation & { ah_line?: number; team_name?: string; handicap?: string }) | null;
+    league_whitelisted?: boolean;
+    ou_whitelisted?: boolean;
+    ah_whitelisted?: boolean;
     home_form: Record<string, unknown>;
     away_form: Record<string, unknown>;
     h2h: Record<string, unknown>;
@@ -58,14 +64,20 @@ export default function MatchPage() {
     if (!recommendation || !betAmount) return;
     setPlacing(true);
     try {
+      const amount = parseFloat(betAmount);
       await betsApi.create({
         match_id: match.id,
         recommendation_id: recommendation.id,
         outcome: recommendation.outcome,
-        amount: parseFloat(betAmount),
+        amount,
         odds: recommendation.odds,
         bookmaker: bookmaker || undefined,
       });
+      // Rafraîchir la bankroll et les paris dans tout le dashboard
+      qc.invalidateQueries({ queryKey: ["bankroll"] });
+      qc.invalidateQueries({ queryKey: ["bets"] });
+      // Mettre à jour le store local
+      if (user) updateUser({ bankroll: Math.max(0, user.bankroll - amount) });
       setPlaced(true);
     } catch {
       alert("Erreur lors de l'enregistrement du pari");
@@ -172,6 +184,76 @@ export default function MatchPage() {
         </div>
       )}
 
+      {/* Ligue non whitelistée : pas de reco */}
+      {!recommendation && analysis?.league_whitelisted === false && analysis.prediction && user?.plan !== "FREE" && (
+        <div className="card border-yellow-500/30 bg-yellow-500/5">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
+            <div className="text-sm">
+              <p className="font-semibold text-yellow-300">
+                Pas de recommandation pour cette ligue
+              </p>
+              <p className="text-gray-300 mt-1">
+                Selon le backtest historique, le modèle n'est pas rentable sur {analysis.match.league}.
+                Les prédictions s'affichent à titre indicatif mais aucune mise n'est conseillée.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ligue whitelistée MAIS aucun value bet trouvé (edges hors range ou pas d'edge) */}
+      {!recommendation && analysis?.league_whitelisted === true && analysis.prediction && user?.plan !== "FREE" && (() => {
+        const m = analysis.match;
+        const p = analysis.prediction;
+        const edges = [
+          { label: m.home_team, prob: p.prob_home, odds: m.home_odds, side: "HOME" },
+          { label: "Match nul", prob: p.prob_draw, odds: m.draw_odds, side: "DRAW" },
+          { label: m.away_team, prob: p.prob_away, odds: m.away_odds, side: "AWAY" },
+        ].map((e) => ({
+          ...e,
+          edge: e.odds ? e.prob * e.odds - 1 : null,
+        }));
+        const maxEdge = Math.max(...edges.map((e) => e.edge ?? -1));
+        const hasHighEdge = maxEdge > 0.20;
+        const hasLowEdge = maxEdge >= 0 && maxEdge < 0.08;
+        return (
+          <div className="card border-gray-700 bg-gray-900/40">
+            <div className="flex items-start gap-3 mb-3">
+              <Info className="w-5 h-5 text-gray-400 shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <p className="font-semibold text-gray-200">Pas de value bet sur ce match</p>
+                <p className="text-gray-400 mt-1">
+                  {hasHighEdge
+                    ? `Le modèle détecte un edge énorme (${(maxEdge * 100).toFixed(0)}%) mais on filtre au-delà de 20% car ces "value bets" géants sont rarement réels (modèle mal calibré sur les outsiders extrêmes — confirmé par le backtest).`
+                    : hasLowEdge
+                    ? `Edge maximum ${(maxEdge * 100).toFixed(1)}%, sous le seuil minimum de 8% (où la stratégie a une vraie rentabilité historique).`
+                    : "Le modèle est moins confiant que le bookmaker sur tous les outcomes — pas d'avantage exploitable."}
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              {edges.map((e) => (
+                <div key={e.side} className="bg-gray-800/60 rounded p-2 text-center">
+                  <p className="text-gray-500 truncate">{e.label}</p>
+                  <p className="font-semibold mt-1">{(e.prob * 100).toFixed(0)}% · {e.odds?.toFixed(2) ?? "—"}</p>
+                  {e.edge !== null && (
+                    <p className={cn(
+                      "text-[10px] font-mono",
+                      e.edge >= 0.08 && e.edge <= 0.20 ? "text-green-400" :
+                      e.edge > 0.20 ? "text-yellow-400" :
+                      e.edge < 0 ? "text-red-400" : "text-gray-500"
+                    )}>
+                      Edge {e.edge >= 0 ? "+" : ""}{(e.edge * 100).toFixed(0)}%
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Recommandation Kelly */}
       {recommendation && user?.plan !== "FREE" && (
         <div className="card border-brand-500/30 bg-brand-500/5">
@@ -186,8 +268,11 @@ export default function MatchPage() {
           </div>
           <div className="grid grid-cols-3 gap-4 text-center mb-5">
             <div>
-              <p className="text-xs text-gray-500">Outcome</p>
-              <p className="font-bold mt-1">{outcomeLabel(recommendation.outcome)}</p>
+              <p className="text-xs text-gray-500">Pari sur</p>
+              <p className="font-bold mt-1 truncate">
+                {pickedTeamLabel(recommendation.outcome, analysis.match)}
+              </p>
+              <p className="text-[10px] text-gray-500">({outcomeLabel(recommendation.outcome)})</p>
             </div>
             <div>
               <p className="text-xs text-gray-500">Mise conseillée</p>
@@ -203,7 +288,7 @@ export default function MatchPage() {
 
           {placed ? (
             <div className="p-3 rounded-lg bg-edge-green/10 border border-edge-green/20 text-edge-green text-sm text-center">
-              ✓ Pari enregistré dans votre historique
+              ✓ Pari sur <strong>{pickedTeamLabel(recommendation.outcome, analysis.match)}</strong> enregistré
             </div>
           ) : (
             <div className="space-y-3">
@@ -236,7 +321,9 @@ export default function MatchPage() {
                 disabled={placing || !betAmount}
                 className="btn-primary w-full"
               >
-                {placing ? "Enregistrement..." : "Enregistrer ce pari"}
+                {placing
+                  ? "Enregistrement..."
+                  : `Enregistrer ce pari sur ${pickedTeamLabel(recommendation.outcome, analysis.match)}`}
               </button>
             </div>
           )}
@@ -244,6 +331,93 @@ export default function MatchPage() {
           {recommendation.strategy && (
             <p className="text-xs text-gray-500 mt-3 pt-3 border-t border-gray-800/50">
               {recommendation.strategy}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Recommandation O/U 2.5 buts */}
+      {analysis?.ou_recommendation && user?.plan !== "FREE" && (
+        <div className="card border-purple-500/30 bg-purple-500/5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-purple-300 flex items-center gap-2">
+              Recommandation O/U 2.5 buts
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-200">
+                Buts
+              </span>
+            </h2>
+            <span className={cn(
+              "badge-edge",
+              analysis.ou_recommendation.edge >= 0.10 ? "badge-high" : "badge-medium"
+            )}>
+              Edge {(analysis.ou_recommendation.edge * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <p className="text-xs text-gray-500">Pari sur</p>
+              <p className="font-bold mt-1">
+                {analysis.ou_recommendation.outcome === "OVER" ? "Plus de 2.5 buts" : "Moins de 2.5 buts"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Mise conseillée</p>
+              <p className="font-bold text-purple-300 mt-1">
+                {formatCurrency(analysis.ou_recommendation.recommended_amount)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Cote</p>
+              <p className="font-bold mt-1">{analysis.ou_recommendation.odds?.toFixed(2) ?? "—"}</p>
+            </div>
+          </div>
+          {analysis.ou_recommendation.strategy && (
+            <p className="text-xs text-gray-500 mt-3 pt-3 border-t border-gray-800/50">
+              {analysis.ou_recommendation.strategy}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Recommandation Asian Handicap */}
+      {analysis?.ah_recommendation && user?.plan !== "FREE" && (
+        <div className="card border-teal-500/30 bg-teal-500/5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-teal-300 flex items-center gap-2">
+              Recommandation Asian Handicap
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-200">
+                Spread
+              </span>
+            </h2>
+            <span className={cn(
+              "badge-edge",
+              analysis.ah_recommendation.edge >= 0.10 ? "badge-high" : "badge-medium"
+            )}>
+              Edge {(analysis.ah_recommendation.edge * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <p className="text-xs text-gray-500">Pari sur</p>
+              <p className="font-bold mt-1 truncate">
+                {analysis.ah_recommendation.team_name ?? "—"}
+              </p>
+              <p className="text-[10px] text-gray-500">handicap {analysis.ah_recommendation.handicap}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Mise conseillée</p>
+              <p className="font-bold text-teal-300 mt-1">
+                {formatCurrency(analysis.ah_recommendation.recommended_amount)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Cote</p>
+              <p className="font-bold mt-1">{analysis.ah_recommendation.odds?.toFixed(2) ?? "—"}</p>
+            </div>
+          </div>
+          {analysis.ah_recommendation.strategy && (
+            <p className="text-xs text-gray-500 mt-3 pt-3 border-t border-gray-800/50">
+              {analysis.ah_recommendation.strategy}
             </p>
           )}
         </div>

@@ -79,6 +79,8 @@ async def collect(seasons: list[int], leagues: list[str], export_csv: bool):
                     m["draw_odds"] = _extract_odds(raw, "draw")
                     m["away_odds"] = _extract_odds(raw, "awayWin")
                     normalized.append(m)
+                    # normalize_match extrait déjà ht_home_score, ht_away_score,
+                    # home_yellow_cards, away_yellow_cards, home_red_cards, away_red_cards
 
                 print(f"{len(normalized)} matchs")
                 all_matches.extend(normalized)
@@ -108,6 +110,10 @@ async def collect(seasons: list[int], leagues: list[str], export_csv: bool):
 async def _upsert_to_db(conn: asyncpg.Connection, matches: list[dict]):
     for m in matches:
         try:
+            date_val = m["match_date"]
+            if isinstance(date_val, str):
+                from datetime import datetime as _dt
+                date_val = _dt.fromisoformat(date_val.replace("Z", "+00:00")).replace(tzinfo=None)
             await conn.execute("""
                 INSERT INTO matches (
                     id, external_id, league, season, home_team, away_team,
@@ -116,7 +122,7 @@ async def _upsert_to_db(conn: asyncpg.Connection, matches: list[dict]):
                 )
                 VALUES (
                     gen_random_uuid(), $1, $2, $3, $4, $5,
-                    $6::timestamptz, $7::\"MatchStatus\", $8, $9,
+                    $6, $7, $8, $9,
                     $10, $11, $12, NOW(), NOW()
                 )
                 ON CONFLICT (external_id) DO UPDATE
@@ -129,7 +135,7 @@ async def _upsert_to_db(conn: asyncpg.Connection, matches: list[dict]):
                         updated_at = NOW()
             """,
                 m["external_id"], m["league"], m["season"],
-                m["home_team"], m["away_team"], m["match_date"],
+                m["home_team"], m["away_team"], date_val,
                 m["status"], m.get("home_score"), m.get("away_score"),
                 m.get("home_odds"), m.get("draw_odds"), m.get("away_odds"),
             )

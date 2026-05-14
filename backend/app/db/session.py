@@ -15,6 +15,9 @@ engine = create_async_engine(
     connect_args=_connect_args,
     pool_size=10,
     max_overflow=20,
+    # Évite les "connection is closed" sur Prisma cloud DB (idle timeout côté serveur)
+    pool_pre_ping=True,
+    pool_recycle=1800,  # recycle toute connection après 30 min
     echo=settings.environment == "development",
 )
 

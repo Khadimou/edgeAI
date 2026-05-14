@@ -1,6 +1,6 @@
 """
 Construction du dataset de features pour l'entraînement XGBoost.
-Calcule 29 features à partir de l'historique, sans aucun data leakage temporel.
+36 features dont classements dynamiques, cartons, mi-temps — sans data leakage temporel.
 
 Usage:
     python build_features.py --input data/raw/matches.csv --output data/features/dataset.csv
@@ -14,7 +14,11 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pipeline.features import compute_features_from_history, MatchFeatures
+from pipeline.features import (
+    compute_features_from_history,
+    compute_standings_from_history,
+    MatchFeatures,
+)
 
 OUTCOMES = ["HOME", "DRAW", "AWAY"]
 DEFAULT_INPUT = Path(__file__).parent / "data" / "raw" / "matches.csv"
@@ -26,14 +30,17 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
     df = pd.read_csv(input_path, parse_dates=["match_date"])
     print(f"  {len(df)} matchs bruts")
 
-    # Ne garder que les matchs avec résultat connu
     df = df.dropna(subset=["home_score", "away_score"])
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
     df = df.sort_values("match_date").reset_index(drop=True)
     print(f"  {len(df)} matchs avec résultats")
 
-    # Label : 0=HOME, 1=DRAW, 2=AWAY
+    # Colonnes optionnelles — remplir avec NaN si absentes
+    for col in ["ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
     def label(row):
         if row["home_score"] > row["away_score"]:
             return 0
@@ -43,11 +50,12 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
 
     df["label"] = df.apply(label, axis=1)
 
-    # Renommer 'date' si nécessaire (normalize_match utilise match_date)
     if "date" not in df.columns:
         df["date"] = df["match_date"]
 
-    # Calcul des features — exclut les matchs sans assez d'historique
+    # Déduire la ligue depuis la colonne "league" si disponible
+    has_league = "league" in df.columns
+
     feature_rows = []
     skipped = 0
 
@@ -67,11 +75,23 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
             skipped += 1
             continue
 
+        # Classement dynamique sans data leakage
+        league = row.get("league", "") if has_league else ""
+        standings, total_teams = compute_standings_from_history(past, row["date"], league)
+
+        # Pas d'odds_df : on entraîne le modèle SANS les market features.
+        # Avec market features, le modèle apprend à imiter le marché → edge moyen faux.
+        # Confirmé par le backtest : Ligue 1 et Bundesliga deviennent rentables sans.
+        odds_df = None
+
         feat = compute_features_from_history(
             home_team=row["home_team"],
             away_team=row["away_team"],
             match_date=row["date"],
             historical_df=past,
+            odds_df=odds_df,
+            standings=standings,
+            total_teams=total_teams,
         )
 
         feat_dict = {name: val for name, val in zip(
@@ -81,7 +101,7 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
         feat_dict["match_date"] = row["date"].isoformat()
         feat_dict["home_team"] = row["home_team"]
         feat_dict["away_team"] = row["away_team"]
-        feat_dict["league"] = row.get("league", "")
+        feat_dict["league"] = row.get("league", "") if has_league else ""
 
         feature_rows.append(feat_dict)
 
@@ -91,7 +111,6 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
     result = pd.DataFrame(feature_rows)
     print(f"\n  {len(result)} exemples générés ({skipped} ignorés — historique insuffisant)")
 
-    # Distribution des labels
     dist = result["label"].value_counts().sort_index()
     labels = ["Victoire dom.", "Nul", "Victoire ext."]
     for idx, count in dist.items():
@@ -107,12 +126,9 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Construit le dataset de features")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT,
-                        help="CSV des matchs bruts")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
-                        help="CSV du dataset features")
-    parser.add_argument("--min-history", type=int, default=3,
-                        help="Nombre minimum de matchs historiques requis (défaut : 3)")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--min-history", type=int, default=3)
     args = parser.parse_args()
 
     if not args.input.exists():

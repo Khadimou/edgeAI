@@ -20,6 +20,9 @@ def _user_to_dict(user: User) -> dict:
         "max_bets_per_day": user.max_bets_per_day,
         "alerts_enabled": user.alerts_enabled,
         "referral_code": user.referral_code,
+        "goal_amount": user.goal_amount,
+        "goal_timeframe_days": user.goal_timeframe_days,
+        "goal_start_date": user.goal_start_date,
         "created_at": user.created_at,
     }
 

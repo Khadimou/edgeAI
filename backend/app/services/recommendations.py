@@ -4,10 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.db.models import Match, User
 from app.services.kelly import calculate_kelly, RiskProfile
 
-CACHE_TTL = 6 * 3600
+CACHE_TTL = 30 * 60  # 30 min — invalide si bankroll change
 
 
 async def get_user_recommendations(
@@ -16,7 +17,8 @@ async def get_user_recommendations(
     redis,
     limit: int = 10,
 ) -> list[dict]:
-    cache_key = f"recommendations:{user.id}"
+    bankroll_bucket = int((user.bankroll or 0) // 10)  # recompute si bankroll change de 10€+
+    cache_key = f"recommendations:{user.id}:{bankroll_bucket}:{user.kelly_fraction}:{user.risk_profile}"
     cached = await redis.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -28,6 +30,7 @@ async def get_user_recommendations(
             Match.status == "SCHEDULED",
             Match.match_date >= now,
             Match.match_date <= now + timedelta(hours=48),
+            Match.league.in_(settings.value_bet_leagues),
         )
         .options(selectinload(Match.predictions))
         .order_by(Match.match_date)

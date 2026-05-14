@@ -73,6 +73,9 @@ class UserProfileUpdate(BaseModel):
     kelly_fraction: float | None = Field(None, ge=0.1, le=1.0)
     max_bets_per_day: int | None = Field(None, ge=1, le=10)
     alerts_enabled: bool | None = None
+    goal_amount: float | None = Field(None, ge=0)
+    goal_timeframe_days: int | None = Field(None, ge=1, le=365)
+    goal_start_date: datetime | None = None
 
 
 class UserResponse(BaseModel):
@@ -86,6 +89,9 @@ class UserResponse(BaseModel):
     max_bets_per_day: int
     alerts_enabled: bool
     referral_code: str | None
+    goal_amount: float | None = None
+    goal_timeframe_days: int | None = None
+    goal_start_date: datetime | None = None
     created_at: datetime
 
     class Config:

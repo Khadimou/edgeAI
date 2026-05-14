@@ -87,7 +87,7 @@ def tune_and_train(X: np.ndarray, y: np.ndarray, n_trials: int) -> dict:
 
         losses = []
         for train_idx, val_idx in tscv.split(X):
-            clf = CalibratedClassifierCV(XGBClassifier(**params), method="isotonic", cv=3)
+            clf = CalibratedClassifierCV(XGBClassifier(**params), method="sigmoid", cv=3)
             clf.fit(X[train_idx], y[train_idx])
             preds = clf.predict_proba(X[val_idx])
             losses.append(log_loss(y[val_idx], preds))
@@ -114,7 +114,7 @@ def tune_and_train(X: np.ndarray, y: np.ndarray, n_trials: int) -> dict:
                   "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1}
 
     base = XGBClassifier(**xgb_params)
-    model.model = CalibratedClassifierCV(base, method="isotonic", cv=3)
+    model.model = CalibratedClassifierCV(base, method="sigmoid", cv=3)
     model.model.fit(X, y)
 
     try:
@@ -130,7 +130,7 @@ def tune_and_train(X: np.ndarray, y: np.ndarray, n_trials: int) -> dict:
 
     tscv2 = TimeSeriesSplit(n_splits=5)
     oof = np.zeros((len(y), 3))
-    clf_final = CalibratedClassifierCV(XGBClassifier(**xgb_params), method="isotonic", cv=3)
+    clf_final = CalibratedClassifierCV(XGBClassifier(**xgb_params), method="sigmoid", cv=3)
     for train_idx, val_idx in tscv2.split(X):
         clf_final.fit(X[train_idx], y[train_idx])
         oof[val_idx] = clf_final.predict_proba(X[val_idx])
