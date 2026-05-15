@@ -165,6 +165,59 @@ def _load_ah_model():
         return None
 
 
+def _load_wc_inference():
+    """Charge le modèle WC + initialise l'inférence (lazy load du CSV)."""
+    latest = MODEL_DIR / "model_wc_latest.joblib"
+    if not latest.exists():
+        return None
+    try:
+        from .wc_inference import WCInference
+        from pathlib import Path
+        bundle = joblib.load(latest)
+        csv_path = Path("/app/data/raw/international_matches.csv")
+        return WCInference(bundle, csv_path)
+    except Exception as e:
+        log.error("wc_model_load_error", error=str(e))
+        return None
+
+
+async def _refresh_intl_matches_csv(redis) -> bool:
+    """
+    Re-fetch le CSV des matchs internationaux 1×/jour (lock 22h).
+    Sources : github.com/martj42/international_results
+    """
+    lock_key = "intl:csv:lock"
+    if await redis.get(lock_key):
+        return False  # déjà fetché récemment
+
+    from pathlib import Path
+    import httpx
+    url = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+    csv_path = Path("/app/data/raw/international_matches.csv")
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            import pandas as pd
+            from io import StringIO
+            df = pd.read_csv(StringIO(r.text))
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date", "home_team", "away_team", "home_score", "away_score"])
+            df["home_score"] = df["home_score"].astype(int)
+            df["away_score"] = df["away_score"].astype(int)
+            df["is_wc"] = df["tournament"] == "FIFA World Cup"
+            df["is_wc_qualifier"] = df["tournament"].str.contains("World Cup qualification", na=False, regex=False)
+            df["is_friendly"] = df["tournament"] == "Friendly"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(csv_path, index=False)
+        await redis.setex(lock_key, 22 * 3600, "1")
+        log.info("intl_csv_refreshed", n_matches=len(df), path=str(csv_path))
+        return True
+    except Exception as e:
+        log.error("intl_csv_refresh_error", error=str(e))
+        return False
+
+
 async def _ingest_foot_odds(session, redis) -> int:
     """
     Fetch les cotes h2h + totals 2.5 + spreads (AH) pour les 5 ligues foot via the-odds-api.
@@ -357,16 +410,25 @@ async def run_pipeline():
     if ah_model is None:
         log.info("no_ah_model_available")
 
+    # Refresh CSV intl matches 1×/jour avant de charger le modèle WC
+    await _refresh_intl_matches_csv(redis)
+    wc_inference = _load_wc_inference()
+    if wc_inference is None:
+        log.info("no_wc_model_available")
+
     football_client = FootballDataClient(FOOTBALL_API_KEY)
     odds_client = OddsAPIClient(ODDS_API_KEY)
 
     try:
         async with async_session() as session:
             for code, league_name in SUPPORTED_LEAGUES.items():
-                # World Cup : pas de standings (poules), modèle club pas optimal sur nationales
-                # → fetch les matchs + odds, mais pas de prédiction (modèle non valide).
+                # World Cup : modèle dédié (wc_inference), pas de standings (poules).
+                # Validé walk-forward sur 4 WC : +12.9 pts d'accuracy vs baseline.
                 if league_name == "World Cup":
-                    await _process_world_cup(code, league_name, session, redis, football_client)
+                    await _process_world_cup(
+                        code, league_name, session, redis, football_client,
+                        wc_inference=wc_inference,
+                    )
                     await asyncio.sleep(7)
                     continue
 
@@ -437,11 +499,11 @@ async def run_pipeline():
     log.info("pipeline_done", timestamp=datetime.now(timezone.utc).isoformat())
 
 
-async def _process_world_cup(code, league_name, session, redis, football_client):
+async def _process_world_cup(code, league_name, session, redis, football_client, wc_inference=None):
     """
-    Process spécifique à la Coupe du Monde : fetch les matchs uniquement.
-    Pas de prédiction (modèle club non valide sur foot international),
-    pas de standings (poules au lieu de classement linéaire).
+    Process spécifique à la Coupe du Monde :
+    - Fetch matchs WC (récents + upcoming)
+    - Si wc_inference dispo, génère prédictions H/D/A
     """
     try:
         recent_finished = await football_client.get_recently_finished(code, days=2)
@@ -454,9 +516,24 @@ async def _process_world_cup(code, league_name, session, redis, football_client)
 
         upcoming = await football_client.get_upcoming_matches(code, days=14)
         log.info("wc_matches_fetched", count=len(upcoming))
+        pred_count = 0
         for raw in upcoming:
             normalized = normalize_match(raw, league_name)
-            await _upsert_match(session, normalized)
+            match_id = await _upsert_match(session, normalized)
+
+            # Génère prédiction WC si modèle dispo
+            if wc_inference and match_id:
+                pred = wc_inference.predict(
+                    normalized["home_team"],
+                    normalized["away_team"],
+                    normalized["match_date"],
+                )
+                if pred:
+                    pred["model_version"] = "wc_intl"
+                    await _upsert_prediction(session, match_id, pred)
+                    pred_count += 1
+        if pred_count:
+            log.info("wc_predictions_generated", count=pred_count)
     except Exception as e:
         log.error("wc_process_error", error=str(e))
 
