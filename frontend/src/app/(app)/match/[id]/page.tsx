@@ -184,8 +184,28 @@ export default function MatchPage() {
         </div>
       )}
 
+      {/* World Cup : message dédié (modèle non validé sur foot international) */}
+      {analysis?.match.league === "World Cup" && user?.plan !== "FREE" && (
+        <div className="card border-blue-500/30 bg-blue-500/5">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+            <div className="text-sm">
+              <p className="font-semibold text-blue-300">
+                Match de Coupe du Monde
+              </p>
+              <p className="text-gray-300 mt-1">
+                Notre modèle est entraîné sur 18 000 matchs de clubs européens. Le foot
+                international (équipes nationales) a une dynamique très différente :
+                joueurs qui se retrouvent rarement, pas de "forme" continue, importance
+                énorme des blessures/forfaits. <strong>Aucune mise n'est conseillée</strong> sur la WC.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Ligue non whitelistée : pas de reco */}
-      {!recommendation && analysis?.league_whitelisted === false && analysis.prediction && user?.plan !== "FREE" && (
+      {!recommendation && analysis?.league_whitelisted === false && analysis?.match.league !== "World Cup" && analysis.prediction && user?.plan !== "FREE" && (
         <div className="card border-yellow-500/30 bg-yellow-500/5">
           <div className="flex items-start gap-3">
             <Info className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />

@@ -363,6 +363,13 @@ async def run_pipeline():
     try:
         async with async_session() as session:
             for code, league_name in SUPPORTED_LEAGUES.items():
+                # World Cup : pas de standings (poules), modèle club pas optimal sur nationales
+                # → fetch les matchs + odds, mais pas de prédiction (modèle non valide).
+                if league_name == "World Cup":
+                    await _process_world_cup(code, league_name, session, redis, football_client)
+                    await asyncio.sleep(7)
+                    continue
+
                 # Classement caché 24h pour éviter les 429 (free tier 10 req/min)
                 standings, total_teams, was_api_call = await _get_cached_standings(
                     redis, football_client, code
@@ -428,6 +435,30 @@ async def run_pipeline():
         await engine.dispose()
 
     log.info("pipeline_done", timestamp=datetime.now(timezone.utc).isoformat())
+
+
+async def _process_world_cup(code, league_name, session, redis, football_client):
+    """
+    Process spécifique à la Coupe du Monde : fetch les matchs uniquement.
+    Pas de prédiction (modèle club non valide sur foot international),
+    pas de standings (poules au lieu de classement linéaire).
+    """
+    try:
+        recent_finished = await football_client.get_recently_finished(code, days=2)
+        log.info("wc_finished_fetched", count=len(recent_finished))
+        for raw in recent_finished:
+            normalized = normalize_match(raw, league_name)
+            await _upsert_match(session, normalized)
+
+        await asyncio.sleep(7)
+
+        upcoming = await football_client.get_upcoming_matches(code, days=14)
+        log.info("wc_matches_fetched", count=len(upcoming))
+        for raw in upcoming:
+            normalized = normalize_match(raw, league_name)
+            await _upsert_match(session, normalized)
+    except Exception as e:
+        log.error("wc_process_error", error=str(e))
 
 
 async def _process_league(

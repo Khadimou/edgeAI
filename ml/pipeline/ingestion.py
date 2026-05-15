@@ -18,6 +18,7 @@ SUPPORTED_LEAGUES = {
     "BL1": "Bundesliga",
     "SA": "Serie A",
     "FL1": "Ligue 1",
+    "WC": "World Cup",  # FIFA World Cup — actif en juin-juillet pendant la compétition
 }
 
 
@@ -146,6 +147,7 @@ ODDS_API_SOCCER_KEYS = {
     "Bundesliga": "soccer_germany_bundesliga",
     "Serie A": "soccer_italy_serie_a",
     "Ligue 1": "soccer_france_ligue_one",
+    "World Cup": "soccer_fifa_world_cup",  # actif uniquement pendant la WC
 }
 
 
