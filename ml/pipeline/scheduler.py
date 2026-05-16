@@ -905,7 +905,8 @@ _PER_LEAGUE_CACHE: dict[str, EdgeAIModel] = {}
 
 
 def _load_per_league_model(league: str) -> EdgeAIModel | None:
-    """Charge le modèle dédié pour une ligue. Renvoie None si absent."""
+    """Charge le modèle dédié pour une ligue. Renvoie None si absent ou si le
+    schema de features ne correspond pas à MatchFeatures actuel (modèle obsolète)."""
     if league in _PER_LEAGUE_CACHE:
         return _PER_LEAGUE_CACHE[league]
     slug = league.replace(" ", "_").lower()
@@ -914,8 +915,23 @@ def _load_per_league_model(league: str) -> EdgeAIModel | None:
         return None
     try:
         bundle = joblib.load(path)
+        cal = bundle["model"]
+        # Vérifie que le nombre de features attendu matche le schema actuel
+        expected_n = len(MatchFeatures.feature_names())
+        try:
+            inner = cal.calibrated_classifiers_[0].estimator
+            model_n = int(getattr(inner, "n_features_in_", expected_n))
+        except Exception:
+            model_n = expected_n
+        if model_n != expected_n:
+            log.warning("per_league_model_schema_mismatch_skipped",
+                        league=league, model_features=model_n,
+                        expected_features=expected_n,
+                        action="falling_back_to_global_model")
+            _PER_LEAGUE_CACHE[league] = None
+            return None
         model = EdgeAIModel(version=bundle.get("version", f"perleague_{slug}"))
-        model.model = bundle["model"]
+        model.model = cal
         _PER_LEAGUE_CACHE[league] = model
         return model
     except Exception as e:

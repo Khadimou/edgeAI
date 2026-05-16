@@ -73,7 +73,7 @@ class FootballInferenceState:
                 WHERE status = 'FINISHED'
                   AND home_score IS NOT NULL
                   AND away_score IS NOT NULL
-                  AND sport = 'football'
+                  AND UPPER(sport) = 'FOOTBALL'
                 ORDER BY match_date
             """))
             rows = result.fetchall()
