@@ -166,6 +166,28 @@ def _load_ah_model():
         return None
 
 
+def _load_dc_model():
+    """Charge le modèle Dixon-Coles pour le 1X2 (model_dc_latest.joblib).
+
+    DC remplace XGBoost pour le 1X2 quand dispo. Backtest a montré +4pts ROI
+    (DC +1% vs XGBoost -3%) grâce à des probas mieux discriminantes sur les
+    favoris clairs (Bayern 85% vs XGB 50%).
+    """
+    latest = MODEL_DIR / "model_dc_latest.joblib"
+    if not latest.exists():
+        return None
+    try:
+        import sys
+        ml_root = Path(__file__).parent.parent
+        if str(ml_root) not in sys.path:
+            sys.path.insert(0, str(ml_root))
+        from dixon_coles import DixonColes
+        return DixonColes.load(latest)
+    except Exception as e:
+        log.error("dc_model_load_error", error=str(e))
+        return None
+
+
 def _load_wc_inference():
     """Charge le modèle WC + initialise l'inférence (lazy load du CSV)."""
     latest = MODEL_DIR / "model_wc_latest.joblib"
@@ -463,6 +485,15 @@ async def run_pipeline():
     if ah_model is None:
         log.info("no_ah_model_available")
 
+    # Dixon-Coles : modèle alternatif pour 1X2 (backtest +1pt ROI vs XGB -3pt)
+    # Si dispo + équipes connues, remplace XGB pour le 1X2. Fallback XGB sinon.
+    dc_model = _load_dc_model()
+    if dc_model is None:
+        log.info("no_dc_model_available_fallback_xgb")
+    else:
+        log.info("dc_model_loaded", n_teams=len(dc_model.teams),
+                 home_adv=round(dc_model.home_adv, 3))
+
     # Refresh CSV intl matches 1×/jour avant de charger le modèle WC
     await _refresh_intl_matches_csv(redis)
     wc_inference = _load_wc_inference()
@@ -496,7 +527,7 @@ async def run_pipeline():
                     code, league_name, session, redis,
                     football_client, odds_client, model,
                     standings, total_teams,
-                    ou_model=ou_model, ah_model=ah_model,
+                    ou_model=ou_model, ah_model=ah_model, dc_model=dc_model,
                 )
                 await asyncio.sleep(7)  # gap entre ligues
 
@@ -600,7 +631,7 @@ async def _process_league(
     code, league_name, session, redis,
     football_client, odds_client, model,
     standings, total_teams,
-    ou_model=None, ah_model=None,
+    ou_model=None, ah_model=None, dc_model=None,
 ):
     # 1. Mettre à jour les matchs récemment terminés
     recent_finished = await football_client.get_recently_finished(code, days=2)
@@ -629,7 +660,8 @@ async def _process_league(
 
         if effective_model and match_id:
             prediction = await _generate_prediction(
-                effective_model, normalized, session, standings, total_teams
+                effective_model, normalized, session, standings, total_teams,
+                dc_model=dc_model,
             )
             # Ajoute les probas O/U si le modèle O/U est dispo
             if ou_model is not None:
@@ -848,7 +880,33 @@ async def _generate_prediction(
     session: AsyncSession,
     standings: dict | None = None,
     total_teams: int = 20,
+    dc_model=None,
 ) -> dict:
+    """Génère la prédiction 1X2 pour un match foot.
+
+    Si dc_model (Dixon-Coles) est fourni et que les 2 équipes y sont connues,
+    on utilise DC (backtest a montré +4pts ROI vs XGBoost). Sinon fallback XGB.
+    """
+    home_team = match_data.get("home_team", "")
+    away_team = match_data.get("away_team", "")
+
+    # Priorité 1 : Dixon-Coles si dispo et équipes connues
+    if dc_model is not None and home_team in dc_model.attack and away_team in dc_model.attack:
+        try:
+            p = dc_model.predict(home_team, away_team)
+            return {
+                "prob_home": round(float(p["prob_home"]), 4),
+                "prob_draw": round(float(p["prob_draw"]), 4),
+                "prob_away": round(float(p["prob_away"]), 4),
+                "confidence": round(float(max(p["prob_home"], p["prob_draw"], p["prob_away"])), 4),
+                "shap_values": None,
+                "model_version": "dc_" + datetime.utcnow().strftime("%Y%m%d"),
+            }
+        except Exception as e:
+            log.warning("dc_predict_error_fallback_xgb",
+                        home=home_team, away=away_team, error=str(e))
+
+    # Fallback : XGBoost
     features = await _build_foot_features(match_data, session, standings, total_teams)
     return model.predict(features)
 
