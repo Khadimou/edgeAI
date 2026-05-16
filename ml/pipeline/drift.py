@@ -10,7 +10,7 @@ Détection de dérive + rollback automatique.
 import os
 import shutil
 from datetime import datetime, timezone
-from math import log
+from math import log as math_log
 from pathlib import Path
 
 import structlog
@@ -41,7 +41,7 @@ def _live_metrics(rows: list) -> dict:
         if max(range(3), key=lambda i: probs[i]) == actual:
             correct += 1
         p = max(min(probs[actual], 1 - EPS), EPS)
-        ll_sum += -log(p)
+        ll_sum += -math_log(p)
     n = len(rows)
     return {
         "n": n,
