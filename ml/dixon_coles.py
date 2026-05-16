@@ -140,18 +140,49 @@ class DixonColes:
         log_x_fact = gammaln(x + 1)
         log_y_fact = gammaln(y + 1)
 
-        # Initial params : α et β à 0 (équivalent attack/defense moyens),
-        # γ (home_adv) ≈ 0.25, ρ ≈ -0.05
-        # On parameterize : params = [α_1..α_N, β_1..β_N, γ, ρ]
-        # Constraint : sum(α) = 0 pour identifiabilité → on fixe α_N = -sum(α_1..α_{N-1})
-        # Pareil pour β.
-        # Total free params : 2*(N-1) + 2 = 2N
+        # Smart init : démarre près de l'optimum pour aider la convergence.
+        # α_i = log(avg goals scored by team i / overall avg)  → attack rating
+        # β_i = -log(avg goals conceded / overall avg)        → defense rating (inversé)
+        # γ = log(avg home goals / avg away goals)             → home advantage
+        # ρ = -0.05 (valeur littérature DC pour football)
+        # On parameterize : params = [α_1..α_{N-1}, β_1..β_{N-1}, γ, ρ]
+        # Contrainte sum(α)=0 ⇒ α_N = -Σα_{1..N-1}, idem β.
+        avg_goals_overall = (df["home_score"].sum() + df["away_score"].sum()) / (2 * len(df))
+        avg_home_goals = df["home_score"].mean()
+        avg_away_goals = df["away_score"].mean()
+        gamma_init = float(np.log(max(avg_home_goals, 0.1) / max(avg_away_goals, 0.1)))
+
+        # Compute per-team attack/defense from empirical goals
+        # Aggregation : pour chaque team, somme des goals scored (home + away) et conceded
+        scored = np.zeros(n_teams)
+        conceded = np.zeros(n_teams)
+        games = np.zeros(n_teams)
+        for i in range(len(df)):
+            h, a = home_ids[i], away_ids[i]
+            scored[h] += x[i]
+            scored[a] += y[i]
+            conceded[h] += y[i]
+            conceded[a] += x[i]
+            games[h] += 1
+            games[a] += 1
+        games = np.maximum(games, 1)
+        avg_scored = scored / games
+        avg_conceded = conceded / games
+        # Center on overall mean to respect sum=0 constraint approximatively
+        alpha_init = np.log(np.maximum(avg_scored, 0.1) / max(avg_goals_overall, 0.1))
+        alpha_init -= alpha_init.mean()  # center
+        beta_init = -np.log(np.maximum(avg_conceded, 0.1) / max(avg_goals_overall, 0.1))
+        beta_init -= beta_init.mean()
 
         x0 = np.concatenate([
-            np.zeros(n_teams - 1),   # α_1..α_{N-1} (α_N déduit)
-            np.zeros(n_teams - 1),   # β_1..β_{N-1} (β_N déduit)
-            [0.25, -0.05],            # γ, ρ
+            alpha_init[:-1],     # α_1..α_{N-1} (α_N déduit par contrainte)
+            beta_init[:-1],      # β_1..β_{N-1} (β_N déduit)
+            [gamma_init, -0.05],  # γ, ρ
         ])
+
+        if verbose:
+            print(f"  Smart init: γ={gamma_init:.3f}, "
+                  f"α range [{alpha_init.min():.2f}, {alpha_init.max():.2f}]")
 
         def unpack(params):
             alpha = np.zeros(n_teams)
