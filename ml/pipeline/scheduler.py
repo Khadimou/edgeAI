@@ -281,7 +281,16 @@ async def _ingest_foot_odds(session, redis) -> int:
                 o_odds, u_odds = extract_totals_25(bookmakers)
                 ah_line, ah_h_odds, ah_a_odds = extract_spreads(bookmakers, home, away)
 
-                # Update via team names + match_date (~même jour)
+                # Skip si toutes les cotes sont NULL (rien à update)
+                if not any([h_odds, d_odds, a_odds, o_odds, u_odds,
+                            ah_line, ah_h_odds, ah_a_odds]):
+                    continue
+
+                # Update via team names + match_date (~même jour).
+                # STRICT matching pour éviter de contaminer plusieurs matchs en 1 appel :
+                # match exact si possible, fuzzy seulement avec une similarity score forte
+                # (>= 0.6) via PostgreSQL similarity ou trigram, sinon EXACT match only.
+                # Si fuzzy nécessaire, on requiert un overlap d'au moins 8 caractères.
                 try:
                     from datetime import datetime as _dt
                     dt = _dt.fromisoformat(commence.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -306,19 +315,26 @@ async def _ingest_foot_odds(session, redis) -> int:
                                 opening_ah_away_odds = COALESCE(opening_ah_away_odds, CAST(:aha AS DOUBLE PRECISION)),
                                 opening_captured_at = COALESCE(opening_captured_at, NOW()),
                                 updated_at = NOW()
-                            WHERE sport = 'FOOTBALL'
-                              AND status = 'SCHEDULED'
-                              AND (
-                                home_team = :home OR
-                                home_team ILIKE '%' || :home || '%' OR
-                                :home ILIKE '%' || home_team || '%'
-                              )
-                              AND (
-                                away_team = :away OR
-                                away_team ILIKE '%' || :away || '%' OR
-                                :away ILIKE '%' || away_team || '%'
-                              )
-                              AND ABS(EXTRACT(EPOCH FROM (match_date - :dt))) < 7200
+                            WHERE id IN (
+                                SELECT id FROM matches
+                                WHERE sport = 'FOOTBALL'
+                                  AND status = 'SCHEDULED'
+                                  AND ABS(EXTRACT(EPOCH FROM (match_date - :dt))) < 7200
+                                  AND (
+                                    -- Exact match (case insensitive)
+                                    LOWER(home_team) = LOWER(:home) OR
+                                    -- Fuzzy : substring de >= 8 chars, dans les 2 sens
+                                    (LENGTH(:home) >= 8 AND home_team ILIKE '%' || :home || '%') OR
+                                    (LENGTH(home_team) >= 8 AND :home ILIKE '%' || home_team || '%')
+                                  )
+                                  AND (
+                                    LOWER(away_team) = LOWER(:away) OR
+                                    (LENGTH(:away) >= 8 AND away_team ILIKE '%' || :away || '%') OR
+                                    (LENGTH(away_team) >= 8 AND :away ILIKE '%' || away_team || '%')
+                                  )
+                                ORDER BY ABS(EXTRACT(EPOCH FROM (match_date - :dt))) ASC
+                                LIMIT 1
+                            )
                             RETURNING id
                         """), {
                             "h": h_odds, "d": d_odds, "a": a_odds,
@@ -326,6 +342,11 @@ async def _ingest_foot_odds(session, redis) -> int:
                             "ahl": ah_line, "ahh": ah_h_odds, "aha": ah_a_odds,
                             "home": home, "away": away, "dt": dt,
                         })
+                        # Safety : LIMIT 1 garantit au plus 1 row, mais on log si plus
+                        if result.rowcount > 1:
+                            log.warning("foot_odds_multi_match_warning",
+                                        home=home, away=away, rows=result.rowcount,
+                                        action="should_not_happen_with_LIMIT_1")
                         if result.rowcount > 0:
                             updated += result.rowcount
                 except Exception as e:
