@@ -27,13 +27,16 @@ from pathlib import Path
 
 import pandas as pd
 import structlog
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
 
-# Load .env from project root
-load_dotenv(Path(__file__).parent.parent / ".env")
-load_dotenv(Path(__file__).parent / ".env")
+# Optional dotenv (local). En prod (Docker), DATABASE_URL vient de l'environnement.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 log = structlog.get_logger()
 
