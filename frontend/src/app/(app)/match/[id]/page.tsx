@@ -4,12 +4,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { fr } from "date-fns/locale";
-import { ArrowLeft, TrendingUp, Info } from "lucide-react";
+import { ArrowLeft, TrendingUp, Info, HelpCircle } from "lucide-react";
 import { matchesApi, betsApi } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { formatCurrency, formatPercent, outcomeLabel, pickedTeamLabel, cn } from "@/lib/utils";
 import { useState } from "react";
 import type { MatchSummary, Prediction, Recommendation } from "@/types/api";
+import ExplainModal from "@/components/ExplainModal";
 
 export default function MatchPage() {
   const { id } = useParams<{ id: string }>();
@@ -20,6 +21,7 @@ export default function MatchPage() {
   const [betAmount, setBetAmount] = useState("");
   const [bookmaker, setBookmaker] = useState("");
   const [placed, setPlaced] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
 
   const { data: analysis, isLoading } = useQuery<{
     match: MatchSummary;
@@ -141,6 +143,15 @@ export default function MatchPage() {
             <span className="text-xs text-gray-500 ml-auto">
               v{prediction.model_version} · confiance {formatPercent(prediction.confidence)}
             </span>
+            <button
+              type="button"
+              onClick={() => setExplainOpen(true)}
+              className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 ml-2"
+              title="Pourquoi le modèle prédit ça ?"
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+              Expliquer
+            </button>
           </div>
           <div className="space-y-3">
             {probBars.map((bar) => (
@@ -451,6 +462,15 @@ export default function MatchPage() {
           </p>
           <a href="/settings" className="btn-primary">Passer à Pro — 19€/mois</a>
         </div>
+      )}
+
+      {explainOpen && (
+        <ExplainModal
+          matchId={match.id}
+          homeTeam={match.home_team}
+          awayTeam={match.away_team}
+          onClose={() => setExplainOpen(false)}
+        />
       )}
     </div>
   );

@@ -113,4 +113,5 @@ export const trackingApi = {
 // Admin observability
 export const adminApi = {
   observability: () => api.get("/admin/observability"),
+  explain: (matchId: string) => api.get(`/admin/explain/${matchId}`),
 };
