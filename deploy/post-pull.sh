@@ -52,6 +52,9 @@ async def main():
         # force=True : bypass cooldown + RETRAIN_MIN_SAMPLES pour le 1er retrain
         # post-migration (changement de schema features)
         results = await maybe_auto_retrain_all(session, force=True)
+        # Commit explicite pour persister _register_in_db (sinon rollback silencieux
+        # en sortie du async with → model_versions reste désynchro avec le disque)
+        await session.commit()
         print(f'Auto-retrain results: {results}')
     await engine.dispose()
 
