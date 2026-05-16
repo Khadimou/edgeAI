@@ -11,6 +11,21 @@ services:
       timeout: 3s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-edgeai}
+      POSTGRES_USER: ${POSTGRES_USER:-edgeai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgeai_dev_password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edgeai} -d ${POSTGRES_DB:-edgeai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -31,6 +46,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./ml:/ml
@@ -50,6 +67,8 @@ services:
       PER_LEAGUE_MODEL_LEAGUES: "Serie A"
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     volumes:
       - ./ml:/app
@@ -75,3 +94,4 @@ services:
 
 volumes:
   redis_data:
+  pgdata:

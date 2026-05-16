@@ -5,11 +5,17 @@
 # - Frontend en build optimisé (Next.js standalone)
 # - Pas de volume mount du code (image figée)
 # - Pas de --reload sur uvicorn
-# - Postgres LOCAL désactivé (on utilise Prisma cloud via DATABASE_URL)
+# - Postgres self-hosted (free, illimité ; auparavant Prisma cloud bloqué par plan)
 
 services:
   redis:
     ports: []  # ne pas exposer redis sur l'host en prod
+
+  postgres:
+    # Expose seulement sur loopback (127.0.0.1) pour permettre `npx prisma db push`
+    # depuis l'host. Pas accessible depuis l'extérieur (firewall + loopback only).
+    ports:
+      - "127.0.0.1:5432:5432"
 
   backend:
     restart: unless-stopped
