@@ -301,7 +301,7 @@ export default function TodayPage() {
 
       {/* Résumé du jour */}
       {data && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
           <div className="stat-card">
             <div className="stat-label">Matchs aujourd'hui</div>
             <div className="stat-value">{data.total_matches}</div>

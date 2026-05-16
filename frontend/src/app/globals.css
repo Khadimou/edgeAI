@@ -72,4 +72,20 @@
   .stat-value {
     @apply text-2xl font-bold;
   }
+
+  /* Mobile : card spacing réduit */
+  @media (max-width: 640px) {
+    .card {
+      @apply p-4;
+    }
+  }
+}
+
+/* Animation du drawer mobile (sidebar slide-in) */
+@keyframes slide-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
 }

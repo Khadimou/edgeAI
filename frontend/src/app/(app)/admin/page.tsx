@@ -181,7 +181,7 @@ export default function AdminPage() {
       {/* Cache standings */}
       <Card>
         <h2 className="text-sm font-semibold mb-4 text-gray-300">Cache standings (TTL 24h)</h2>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
           {Object.entries(data.standings_cache).map(([code, st]) => (
             <div key={code} className="bg-gray-800/40 rounded p-2 text-center text-xs">
               <p className="font-mono">{code}</p>
@@ -203,7 +203,7 @@ export default function AdminPage() {
           <Database className="w-4 h-4" />
           Couverture cotes foot (scheduled)
         </h2>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <MetricBox
             label="Matchs SCHEDULED"
             value={`${data.foot_freshness.scheduled_matches}`}
@@ -312,7 +312,7 @@ export default function AdminPage() {
             <Trophy className="w-4 h-4" />
             Drift detection
           </h2>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <MetricBox label="Modèle actif" value={data.drift.deployed_model.substring(0, 18) + "..."} />
             <MetricBox label="OOF accuracy" value={`${(data.drift.oof_accuracy * 100).toFixed(1)}%`} />
             <MetricBox label="OOF log-loss" value={data.drift.oof_log_loss.toFixed(3)} />
