@@ -170,8 +170,11 @@ def _load_dc_model():
     """Charge le modèle Dixon-Coles pour le 1X2 (model_dc_latest.joblib).
 
     DC remplace XGBoost pour le 1X2 quand dispo. Backtest a montré +4pts ROI
-    (DC +1% vs XGBoost -3%) grâce à des probas mieux discriminantes sur les
-    favoris clairs (Bayern 85% vs XGB 50%).
+    grâce à des probas mieux discriminantes sur les favoris clairs.
+
+    Format actuel : dict per-league {league: DixonColes}. Plus précis que un
+    DC global car les équipes d'une ligue ne jouent qu'entre elles, donc le
+    pool global biaise les attack ratings.
     """
     latest = MODEL_DIR / "model_dc_latest.joblib"
     if not latest.exists():
@@ -182,7 +185,24 @@ def _load_dc_model():
         if str(ml_root) not in sys.path:
             sys.path.insert(0, str(ml_root))
         from dixon_coles import DixonColes
-        return DixonColes.load(latest)
+        bundle = joblib.load(latest)
+
+        # Détecte format : per_league dict ou single DC (rétrocompat)
+        if isinstance(bundle, dict) and bundle.get("type") == "per_league":
+            per_league = {}
+            for league, data in bundle["per_league"].items():
+                dc = DixonColes()
+                dc.attack = data["attack"]
+                dc.defense = data["defense"]
+                dc.home_adv = data["home_adv"]
+                dc.rho = data["rho"]
+                dc.teams = data["teams"]
+                dc._fitted = data["_fitted"]
+                per_league[league] = dc
+            return {"per_league": per_league, "type": "per_league"}
+        else:
+            # Format ancien single DC (fallback)
+            return DixonColes.load(latest)
     except Exception as e:
         log.error("dc_model_load_error", error=str(e))
         return None
@@ -490,6 +510,11 @@ async def run_pipeline():
     dc_model = _load_dc_model()
     if dc_model is None:
         log.info("no_dc_model_available_fallback_xgb")
+    elif isinstance(dc_model, dict) and dc_model.get("type") == "per_league":
+        log.info("dc_model_loaded_per_league",
+                 leagues={l: {"n_teams": len(dc.teams),
+                              "home_adv": round(dc.home_adv, 3)}
+                          for l, dc in dc_model["per_league"].items()})
     else:
         log.info("dc_model_loaded", n_teams=len(dc_model.teams),
                  home_adv=round(dc_model.home_adv, 3))
@@ -884,16 +909,31 @@ async def _generate_prediction(
 ) -> dict:
     """Génère la prédiction 1X2 pour un match foot.
 
-    Si dc_model (Dixon-Coles) est fourni et que les 2 équipes y sont connues,
-    on utilise DC (backtest a montré +4pts ROI vs XGBoost). Sinon fallback XGB.
+    Si dc_model (Dixon-Coles) est fourni et que les 2 équipes y sont connues
+    (dans la même ligue), on utilise DC (backtest +4pts ROI vs XGBoost).
+    Sinon fallback XGB.
+
+    Format dc_model : {'per_league': {league_name: DixonColes}, 'type': 'per_league'}
     """
     home_team = match_data.get("home_team", "")
     away_team = match_data.get("away_team", "")
+    league = match_data.get("league", "")
 
-    # Priorité 1 : Dixon-Coles si dispo et équipes connues
-    if dc_model is not None and home_team in dc_model.attack and away_team in dc_model.attack:
+    # Priorité 1 : Dixon-Coles si dispo et équipes connues dans la bonne ligue
+    dc_for_league = None
+    if dc_model is not None:
+        if isinstance(dc_model, dict) and dc_model.get("type") == "per_league":
+            # Format per-league : on récupère le DC de la ligue du match
+            dc_for_league = dc_model["per_league"].get(league)
+        else:
+            # Format ancien single DC
+            dc_for_league = dc_model
+
+    if (dc_for_league is not None
+            and home_team in dc_for_league.attack
+            and away_team in dc_for_league.attack):
         try:
-            p = dc_model.predict(home_team, away_team)
+            p = dc_for_league.predict(home_team, away_team)
             return {
                 "prob_home": round(float(p["prob_home"]), 4),
                 "prob_draw": round(float(p["prob_draw"]), 4),
@@ -904,7 +944,7 @@ async def _generate_prediction(
             }
         except Exception as e:
             log.warning("dc_predict_error_fallback_xgb",
-                        home=home_team, away=away_team, error=str(e))
+                        home=home_team, away=away_team, league=league, error=str(e))
 
     # Fallback : XGBoost
     features = await _build_foot_features(match_data, session, standings, total_teams)

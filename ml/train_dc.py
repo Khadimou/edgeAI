@@ -65,26 +65,56 @@ async def main():
     log.info("dc_train_data_loaded", n_matches=len(df),
              leagues=df["league"].value_counts().to_dict())
 
-    # Fit un seul DC global (toutes ligues confondues)
-    dc = DixonColes()
-    dc.fit(df, decay_half_life=180, verbose=True)
-
-    # Save
+    # Fit UN DC PAR LIGUE : équipes d'une ligue jouent uniquement entre elles,
+    # donc un global pool est biaisé. Per-league : ~20-30 teams × 3-5k matchs,
+    # convergence rapide (<10s par ligue), attack ratings plus précis.
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     version = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    import shutil
+
+    leagues = sorted(df["league"].dropna().unique())
+    print(f"\n=== Fitting DC per league ({len(leagues)} ligues) ===\n")
+    per_league_models = {}
+
+    for league in leagues:
+        sub = df[df["league"] == league].copy()
+        if len(sub) < 200:
+            print(f"  Skip {league}: only {len(sub)} matches")
+            continue
+        print(f"\n--- {league} ({len(sub)} matchs) ---")
+        dc = DixonColes()
+        dc.fit(sub, decay_half_life=180, verbose=True)
+        per_league_models[league] = dc
+
+        # Sanity check : top 5 attack
+        top5 = sorted(dc.attack.items(), key=lambda x: -x[1])[:5]
+        print(f"  Top 5 attack:")
+        for team, score in top5:
+            print(f"    {team:35} {score:+.3f}")
+
+    # Save : bundle dict {league: DixonColes} dans un seul joblib
+    import joblib
     path = MODEL_DIR / f"model_dc_{version}.joblib"
     latest = MODEL_DIR / "model_dc_latest.joblib"
-    dc.save(path)
-    import shutil
+    bundle = {
+        "per_league": {
+            league: {
+                "attack": dc.attack, "defense": dc.defense,
+                "home_adv": dc.home_adv, "rho": dc.rho,
+                "teams": dc.teams, "_fitted": dc._fitted,
+            } for league, dc in per_league_models.items()
+        },
+        "version": version,
+        "type": "per_league",
+    }
+    joblib.dump(bundle, path)
     shutil.copy2(path, latest)
-    log.info("dc_train_saved", version=version, path=str(path),
-             n_teams=len(dc.teams), home_adv=dc.home_adv, rho=dc.rho)
-
-    # Sanity check : top teams
-    top10_attack = sorted(dc.attack.items(), key=lambda x: -x[1])[:10]
-    print("\nTop 10 attack ratings :")
-    for team, score in top10_attack:
-        print(f"  {team:35} {score:+.3f}")
+    log.info("dc_train_saved_per_league",
+             version=version, path=str(path),
+             n_leagues=len(per_league_models),
+             leagues={l: {"n_teams": len(m.teams), "home_adv": round(m.home_adv, 3),
+                          "rho": round(m.rho, 3)}
+                      for l, m in per_league_models.items()})
 
     await engine.dispose()
 

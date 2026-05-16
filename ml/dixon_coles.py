@@ -195,8 +195,10 @@ class DixonColes:
         if verbose:
             print(f"Fitting DC on {len(df)} matches, {n_teams} teams...")
 
+        # maxiter 2000 (au lieu de 200) pour assurer la convergence sur de gros
+        # datasets multi-ligues (167 teams × 21k matchs = 334 params à fitter)
         result = minimize(neg_log_lik, x0, method="L-BFGS-B",
-                          options={"maxiter": 200, "disp": verbose})
+                          options={"maxiter": 2000, "maxfun": 20000})
 
         if not result.success:
             # Continue quand même si pas converged (souvent presque OK)
