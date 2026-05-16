@@ -97,7 +97,8 @@ class DixonColes:
     # ──────────────────────────────────────────────────────────
 
     def fit(self, df: pd.DataFrame, decay_half_life: float | None = 180.0,
-            verbose: bool = False) -> "DixonColes":
+            verbose: bool = False, min_team_games: int = 20,
+            reg_lambda: float = 0.05) -> "DixonColes":
         """
         Fit DC par MLE sur les matchs du DataFrame.
 
@@ -106,6 +107,10 @@ class DixonColes:
                                     match_date (pd.Timestamp)
             decay_half_life : demi-vie en jours pour les poids temporels.
                               None = pas de pondération.
+            min_team_games : équipes avec moins de N matchs sont filtrées
+                              (évite l'overfit sur équipes rares type Levante).
+            reg_lambda : régularisation L2 sur α/β (shrinker vers 0). Évite
+                          les minima locaux dégénérés.
             verbose : print loss à chaque itération
 
         Retourne self (méthode chaînable).
@@ -114,6 +119,16 @@ class DixonColes:
                                "match_date"]).copy()
         df["home_score"] = df["home_score"].astype(int)
         df["away_score"] = df["away_score"].astype(int)
+
+        # Filtre équipes rares (< min_team_games matchs)
+        all_team_games = pd.concat([df["home_team"], df["away_team"]]).value_counts()
+        rare_teams = set(all_team_games[all_team_games < min_team_games].index)
+        if rare_teams:
+            n_before = len(df)
+            df = df[~df["home_team"].isin(rare_teams) & ~df["away_team"].isin(rare_teams)]
+            if verbose:
+                print(f"  Filtered {len(rare_teams)} rare teams (<{min_team_games} games), "
+                      f"dropped {n_before - len(df)} matches")
 
         # Liste des équipes uniques (ordre alphabétique, conservé pour init params)
         teams = sorted(set(df["home_team"]) | set(df["away_team"]))
@@ -221,7 +236,10 @@ class DixonColes:
                 return 1e10
             log_tau = np.log(tau)
             total = (log_p_h + log_p_a + log_tau) * weights
-            return -total.sum()
+            # L2 regularization sur α et β : λ * Σ(α²) + Σ(β²)
+            # Shrinker vers 0 → évite minima dégénérés sur équipes rares
+            l2_penalty = reg_lambda * (np.sum(alpha ** 2) + np.sum(beta ** 2))
+            return -total.sum() + l2_penalty
 
         if verbose:
             print(f"Fitting DC on {len(df)} matches, {n_teams} teams...")
