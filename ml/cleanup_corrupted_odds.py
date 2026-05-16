@@ -20,12 +20,16 @@ import sys
 from pathlib import Path
 
 import structlog
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
 
-load_dotenv(Path(__file__).parent.parent / ".env")
-load_dotenv(Path(__file__).parent / ".env")
+# Optional dotenv (en local). En prod (Docker), DATABASE_URL vient déjà de l'environnement
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 log = structlog.get_logger()
 
