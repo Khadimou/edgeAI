@@ -98,7 +98,8 @@ class DixonColes:
 
     def fit(self, df: pd.DataFrame, decay_half_life: float | None = 180.0,
             verbose: bool = False, min_team_games: int = 20,
-            reg_lambda: float = 0.05) -> "DixonColes":
+            reg_lambda: float = 0.05,
+            gamma_prior: float = 0.30, gamma_prior_strength: float = 100.0) -> "DixonColes":
         """
         Fit DC par MLE sur les matchs du DataFrame.
 
@@ -239,7 +240,11 @@ class DixonColes:
             # L2 regularization sur α et β : λ * Σ(α²) + Σ(β²)
             # Shrinker vers 0 → évite minima dégénérés sur équipes rares
             l2_penalty = reg_lambda * (np.sum(alpha ** 2) + np.sum(beta ** 2))
-            return -total.sum() + l2_penalty
+            # Prior gaussien sur γ centré à gamma_prior (=0.30, valeur Dixon-Coles paper)
+            # avec gamma_prior_strength (=100) pour forcer γ à rester réaliste même si
+            # les data empiriques sont biaisées par anciens matchs / Covid / etc.
+            gamma_penalty = gamma_prior_strength * (gamma - gamma_prior) ** 2
+            return -total.sum() + l2_penalty + gamma_penalty
 
         if verbose:
             print(f"Fitting DC on {len(df)} matches, {n_teams} teams...")
