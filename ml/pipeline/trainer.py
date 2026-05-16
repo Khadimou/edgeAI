@@ -179,7 +179,12 @@ def _build_dataset(rows: list, min_history: int = 3,
 
 def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None,
                        multi: bool = True) -> tuple[EdgeAIModel, dict]:
-    """Train XGBoost + sigmoid calibration. multi=True → 3-class softprob, sinon binary."""
+    """Train XGBoost + sigmoid calibration. multi=True → 3-class softprob, sinon binary.
+
+    Robuste contre les TSCV folds qui n'ont pas toutes les classes :
+    - Si un fold de train n'a pas toutes les classes attendues → skip le fold
+    - Métriques OOF calculées uniquement sur les rows avec prédictions valides
+    """
     from xgboost import XGBClassifier
     from sklearn.calibration import CalibratedClassifierCV
     from sklearn.model_selection import TimeSeriesSplit
@@ -189,9 +194,24 @@ def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None,
         objective_params = {"objective": "multi:softprob", "num_class": 3,
                             "eval_metric": "mlogloss"}
         n_classes = 3
+        expected_classes = {0, 1, 2}
     else:
         objective_params = {"objective": "binary:logistic", "eval_metric": "logloss"}
         n_classes = 2
+        expected_classes = {0, 1}
+
+    # Sanity check global avant tout : si le dataset entier n'a pas toutes les classes,
+    # le modèle ne peut pas apprendre, on remonte vite une erreur claire
+    unique_global = set(np.unique(y).tolist())
+    counts_global = np.bincount(y.astype(int), minlength=n_classes).tolist()
+    log.info("training_y_distribution",
+             unique=sorted(unique_global), counts=counts_global,
+             n_samples=int(len(y)), multi=multi)
+    if not expected_classes.issubset(unique_global):
+        missing = sorted(expected_classes - unique_global)
+        log.error("training_missing_classes_global", missing=missing,
+                  unique=sorted(unique_global))
+        raise ValueError(f"Dataset n'a pas toutes les classes : manquantes={missing}")
 
     default_params = {
         "n_estimators": 300,
@@ -208,21 +228,44 @@ def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None,
             default_params[k] = v
         default_params.update({**objective_params, "random_state": 42, "n_jobs": -1})
 
-    # OOF cross-validation temporelle
-    tscv = TimeSeriesSplit(n_splits=5)
+    # OOF cross-validation temporelle : 3 splits (vs 5) pour avoir des folds plus
+    # gros = plus de chances que toutes les classes soient présentes en train
+    tscv = TimeSeriesSplit(n_splits=3)
     oof = np.zeros((len(y), n_classes))
+    folds_trained = 0
 
-    for train_idx, val_idx in tscv.split(X):
-        clf = CalibratedClassifierCV(XGBClassifier(**default_params), method="sigmoid", cv=3)
-        clf.fit(X[train_idx], y[train_idx])
-        oof[val_idx] = clf.predict_proba(X[val_idx])
+    for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X), start=1):
+        y_train = y[train_idx]
+        train_classes = set(np.unique(y_train).tolist())
+        if not expected_classes.issubset(train_classes):
+            missing = sorted(expected_classes - train_classes)
+            log.warning("training_fold_skipped_missing_classes",
+                        fold=fold_idx, missing=missing,
+                        train_classes=sorted(train_classes))
+            continue
+        try:
+            clf = CalibratedClassifierCV(XGBClassifier(**default_params), method="sigmoid", cv=3)
+            clf.fit(X[train_idx], y_train)
+            oof[val_idx] = clf.predict_proba(X[val_idx])
+            folds_trained += 1
+        except Exception as e:
+            log.warning("training_fold_failed", fold=fold_idx, error=str(e))
 
-    ll = float(log_loss(y, oof))
-    acc = float(accuracy_score(y, oof.argmax(axis=1)))
+    if folds_trained == 0:
+        raise RuntimeError("Aucun fold de TSCV n'a pu être entraîné — dataset trop petit ou déséquilibré")
+
+    log.info("training_oof_done", folds_trained=folds_trained, total_folds=3)
+
+    # Métriques uniquement sur les rows avec OOF prediction valide (sum > 0)
+    valid = oof.sum(axis=1) > 0
+    y_valid = y[valid]
+    oof_valid = oof[valid]
+    ll = float(log_loss(y_valid, oof_valid))
+    acc = float(accuracy_score(y_valid, oof_valid.argmax(axis=1)))
     if multi:
-        brier = float(brier_score_loss((y == 0).astype(int), oof[:, 0]))
+        brier = float(brier_score_loss((y_valid == 0).astype(int), oof_valid[:, 0]))
     else:
-        brier = float(brier_score_loss(y, oof[:, 1]))
+        brier = float(brier_score_loss(y_valid, oof_valid[:, 1]))
 
     # Modèle final sur tout le dataset
     model = EdgeAIModel()
