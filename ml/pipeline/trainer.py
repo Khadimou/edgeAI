@@ -390,7 +390,10 @@ async def maybe_auto_retrain(session: AsyncSession, force: bool = False) -> bool
     result = await session.execute(text("""
         SELECT home_team, away_team, home_score, away_score, match_date, league,
                ht_home_score, ht_away_score,
-               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0),
+               home_shots, away_shots,
+               home_shots_on_target, away_shots_on_target,
+               home_corners, away_corners
         FROM matches
         WHERE status = 'FINISHED'
           AND home_score IS NOT NULL

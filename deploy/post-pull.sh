@@ -17,8 +17,10 @@ cd "$REPO_DIR"
 echo "==> git pull..."
 git pull origin main
 
-echo "==> Rebuild des images (sans démarrer)..."
-$COMPOSE build ml_worker backend frontend
+echo "==> Rebuild des images (--no-cache pour invalider BuildKit blobs)..."
+# Important : --no-cache nécessaire car BuildKit peut servir des layers cached
+# même si le code source a changé (problème vu sur frontend + ml_worker)
+$COMPOSE build --no-cache ml_worker backend frontend
 
 echo "==> Pré-entraînement des 3 modèles sur la DB prod (one-shot)..."
 # Le ml_worker rebuild a la nouvelle version du code. On lance un container
