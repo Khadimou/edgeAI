@@ -34,9 +34,19 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from pipeline.trainer import maybe_auto_retrain_all
 
+# Aligné sur backend/app/db/session.py
+def build_url(raw: str) -> str:
+    url = raw.split('?')[0]
+    url = url.replace('postgresql://', 'postgresql+asyncpg://')
+    url = url.replace('postgres://', 'postgresql+asyncpg://')
+    return url
+
 async def main():
-    db_url = os.environ['DATABASE_URL']
-    engine = create_async_engine(db_url, pool_pre_ping=True)
+    raw = os.environ['DATABASE_URL']
+    db_url = build_url(raw)
+    connect_args = {'ssl': True} if 'sslmode=require' in raw else {}
+    print(f'DB URL prefix: {db_url[:40]}... (ssl={bool(connect_args)})')
+    engine = create_async_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         results = await maybe_auto_retrain_all(session)
