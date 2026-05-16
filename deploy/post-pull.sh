@@ -49,7 +49,9 @@ async def main():
     engine = create_async_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
-        results = await maybe_auto_retrain_all(session)
+        # force=True : bypass cooldown + RETRAIN_MIN_SAMPLES pour le 1er retrain
+        # post-migration (changement de schema features)
+        results = await maybe_auto_retrain_all(session, force=True)
         print(f'Auto-retrain results: {results}')
     await engine.dispose()
 

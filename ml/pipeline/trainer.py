@@ -300,16 +300,19 @@ async def _register_in_db(session: AsyncSession, metrics: dict, artifact_path: s
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-async def maybe_auto_retrain(session: AsyncSession) -> bool:
+async def maybe_auto_retrain(session: AsyncSession, force: bool = False) -> bool:
     """
     Vérifie si un réentraînement est nécessaire et le lance si oui.
     Retourne True si un nouveau modèle a été déployé.
+
+    force=True : bypass cooldown + RETRAIN_MIN_SAMPLES (utile au déploiement
+    initial après un schema change pour forcer le 1er entraînement).
     """
     state = _load_state()
     last_trained = datetime.fromisoformat(state["last_trained"]).replace(tzinfo=timezone.utc)
     cooldown = timedelta(hours=RETRAIN_COOLDOWN_HOURS)
 
-    if datetime.now(timezone.utc) - last_trained < cooldown:
+    if not force and datetime.now(timezone.utc) - last_trained < cooldown:
         log.info("auto_retrain_cooldown", hours_remaining=round(
             (cooldown - (datetime.now(timezone.utc) - last_trained)).seconds / 3600, 1))
         return False
@@ -325,11 +328,11 @@ async def maybe_auto_retrain(session: AsyncSession) -> bool:
     """), {"since": since_naive})
     new_samples = result.scalar() or 0
 
-    if new_samples < RETRAIN_MIN_SAMPLES:
+    if not force and new_samples < RETRAIN_MIN_SAMPLES:
         log.info("auto_retrain_skip", new_samples=new_samples, threshold=RETRAIN_MIN_SAMPLES)
         return False
 
-    log.info("auto_retrain_start", new_samples=new_samples)
+    log.info("auto_retrain_start", new_samples=new_samples, force=force)
 
     # Charge tous les matchs FINISHED depuis la DB
     result = await session.execute(text("""
@@ -409,13 +412,13 @@ async def maybe_auto_retrain(session: AsyncSession) -> bool:
 
 # ── OU 2.5 auto-retrain ────────────────────────────────────────────────────────
 
-async def maybe_auto_retrain_ou(session: AsyncSession) -> bool:
+async def maybe_auto_retrain_ou(session: AsyncSession, force: bool = False) -> bool:
     """Retrain OU 2.5 : mêmes features que 1X2, label binaire (total > 2.5)."""
     state = _load_state(market="ou")
     last_trained = datetime.fromisoformat(state["last_trained"]).replace(tzinfo=timezone.utc)
     cooldown = timedelta(hours=RETRAIN_COOLDOWN_HOURS)
 
-    if datetime.now(timezone.utc) - last_trained < cooldown:
+    if not force and datetime.now(timezone.utc) - last_trained < cooldown:
         log.info("auto_retrain_ou_cooldown", hours_remaining=round(
             (cooldown - (datetime.now(timezone.utc) - last_trained)).seconds / 3600, 1))
         return False
@@ -429,11 +432,11 @@ async def maybe_auto_retrain_ou(session: AsyncSession) -> bool:
     """), {"since": since_naive})
     new_samples = result.scalar() or 0
 
-    if new_samples < RETRAIN_MIN_SAMPLES:
+    if not force and new_samples < RETRAIN_MIN_SAMPLES:
         log.info("auto_retrain_ou_skip", new_samples=new_samples, threshold=RETRAIN_MIN_SAMPLES)
         return False
 
-    log.info("auto_retrain_ou_start", new_samples=new_samples)
+    log.info("auto_retrain_ou_start", new_samples=new_samples, force=force)
     result = await session.execute(text("""
         SELECT home_team, away_team, home_score, away_score, match_date, league,
                ht_home_score, ht_away_score,
@@ -491,7 +494,7 @@ async def maybe_auto_retrain_ou(session: AsyncSession) -> bool:
 
 # ── AH auto-retrain ────────────────────────────────────────────────────────────
 
-async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
+async def maybe_auto_retrain_ah(session: AsyncSession, force: bool = False) -> bool:
     """Retrain AH : fetch fdco lines + merge avec features DB + train binary.
 
     Coût : ~30s pour fetch fdco (6 saisons × 5 ligues = ~30 CSVs), tolérable
@@ -501,7 +504,7 @@ async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
     last_trained = datetime.fromisoformat(state["last_trained"]).replace(tzinfo=timezone.utc)
     cooldown = timedelta(hours=RETRAIN_COOLDOWN_HOURS)
 
-    if datetime.now(timezone.utc) - last_trained < cooldown:
+    if not force and datetime.now(timezone.utc) - last_trained < cooldown:
         log.info("auto_retrain_ah_cooldown", hours_remaining=round(
             (cooldown - (datetime.now(timezone.utc) - last_trained)).seconds / 3600, 1))
         return False
@@ -515,11 +518,11 @@ async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
     """), {"since": since_naive})
     new_samples = result.scalar() or 0
 
-    if new_samples < RETRAIN_MIN_SAMPLES:
+    if not force and new_samples < RETRAIN_MIN_SAMPLES:
         log.info("auto_retrain_ah_skip", new_samples=new_samples, threshold=RETRAIN_MIN_SAMPLES)
         return False
 
-    log.info("auto_retrain_ah_start", new_samples=new_samples)
+    log.info("auto_retrain_ah_start", new_samples=new_samples, force=force)
 
     # 1. Fetch AH lines depuis fdco (réutilise la logique d'ah_pipeline.py)
     try:
@@ -607,12 +610,21 @@ async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
     # 3. Merge features avec AH lines + outcome
     ah_df = ah_df.copy()
     ah_df["match_date"] = pd.to_datetime(ah_df["match_date"])
-    ah_df["match_date_dt"] = ah_df["match_date"]
+    # Normalize au jour : les heures peuvent différer (UTC vs local)
+    ah_df["match_date_dt"] = ah_df["match_date"].dt.normalize()
+    feat_df["match_date_dt"] = pd.to_datetime(feat_df["match_date_dt"]).dt.normalize()
+
     merged = ah_df.merge(
         feat_df, on=["match_date_dt", "home_team", "away_team"], how="inner",
     )
     if len(merged) < 200:
-        log.warning("auto_retrain_ah_insufficient_merged", count=len(merged))
+        # Debug : pourquoi 0 ? sample des 2 côtés pour voir les noms/dates
+        ah_sample = ah_df[["match_date_dt", "home_team", "away_team"]].head(5).to_dict("records")
+        feat_sample = feat_df[["match_date_dt", "home_team", "away_team"]].head(5).to_dict("records")
+        log.warning("auto_retrain_ah_insufficient_merged",
+                    count=len(merged),
+                    n_ah=len(ah_df), n_feat=len(feat_df),
+                    ah_sample=ah_sample, feat_sample=feat_sample)
         return False
     # Compute label
     merged["home_pnl"] = merged.apply(
@@ -663,21 +675,25 @@ async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
 
 # ── Orchestrateur 3 marchés ────────────────────────────────────────────────────
 
-async def maybe_auto_retrain_all(session: AsyncSession) -> dict:
-    """Orchestrate les 3 retrains. Retourne {market: bool deployed}."""
+async def maybe_auto_retrain_all(session: AsyncSession, force: bool = False) -> dict:
+    """Orchestrate les 3 retrains. Retourne {market: bool deployed}.
+
+    force=True : bypass cooldown + min_samples (utile au déploiement initial
+    après changement de schema features).
+    """
     results = {}
     try:
-        results["1x2"] = await maybe_auto_retrain(session)
+        results["1x2"] = await maybe_auto_retrain(session, force=force)
     except Exception as e:
         log.error("auto_retrain_1x2_error", error=str(e))
         results["1x2"] = False
     try:
-        results["ou"] = await maybe_auto_retrain_ou(session)
+        results["ou"] = await maybe_auto_retrain_ou(session, force=force)
     except Exception as e:
         log.error("auto_retrain_ou_error", error=str(e))
         results["ou"] = False
     try:
-        results["ah"] = await maybe_auto_retrain_ah(session)
+        results["ah"] = await maybe_auto_retrain_ah(session, force=force)
     except Exception as e:
         log.error("auto_retrain_ah_error", error=str(e))
         results["ah"] = False
