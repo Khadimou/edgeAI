@@ -882,14 +882,25 @@ async def _generate_ah_prediction(
 
 
 def _load_active_model() -> EdgeAIModel | None:
-    """Charge le modèle FOOTBALL le plus récent (exclut les modèles NBA + O/U + per-league)."""
+    """Charge le modèle FOOTBALL 1X2 le plus récent.
+
+    Stratégie :
+    1. Privilégie model_latest.joblib (pointeur canonique mis à jour par auto-retrain)
+    2. Fallback : glob model_*.joblib en excluant nba/ou/ah/perleague/wc/tennis
+    """
+    canonical = MODEL_DIR / "model_latest.joblib"
+    if canonical.exists():
+        try:
+            return EdgeAIModel.load(canonical)
+        except Exception as e:
+            log.error("model_load_error_canonical", error=str(e))
+            # Si canonical foire, on continue vers le fallback
+
     all_files = sorted(MODEL_DIR.glob("model_*.joblib"), reverse=True)
+    EXCLUDE = ("nba", "ou", "ah", "perleague", "wc", "tennis")
     model_files = [
         f for f in all_files
-        if "nba" not in f.name.lower()
-        and "ou" not in f.name.lower()
-        and "ah" not in f.name.lower()
-        and "perleague" not in f.name.lower()
+        if not any(token in f.name.lower() for token in EXCLUDE)
     ]
     if not model_files:
         return None
