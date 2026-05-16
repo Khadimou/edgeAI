@@ -116,11 +116,32 @@ class EdgeAIModel:
         }
 
     def predict(self, features: MatchFeatures) -> dict:
-        """Génère les probabilités H/D/A + valeurs SHAP."""
+        """Génère les probabilités H/D/A + valeurs SHAP.
+
+        EdgeAIModel est utilisé exclusivement pour le modèle 1X2 → utilise
+        les 52 features Phase 1 (sans shots/SOT). Backtest a montré que les
+        features Phase 2 dégradent le 1X2 (overfitting directionnel).
+        """
         if self.model is None:
             raise RuntimeError("Modèle non chargé")
 
-        X = features.to_array().reshape(1, -1)
+        # Detect expected number of features from the underlying classifier
+        # pour rester rétrocompatible avec d'anciens modèles 36/52 features
+        try:
+            inner = self.model.calibrated_classifiers_[0].estimator
+            n_expected = int(getattr(inner, "n_features_in_", 52))
+        except Exception:
+            n_expected = 52
+
+        # Slice approprié : si modèle ancien 36, fallback to_array (qui retournera 67) → mismatch
+        # Pour 52 (Phase 1) et 67 (Full), on slice ou pas
+        if n_expected == 52:
+            X = features.to_array_phase1().reshape(1, -1)
+            names = MatchFeatures.feature_names_phase1()
+        else:
+            X = features.to_array().reshape(1, -1)
+            names = self._feature_names
+
         proba = self.model.predict_proba(X)[0]
 
         shap_values = None
@@ -131,7 +152,7 @@ class EdgeAIModel:
                     sv = sv[0]
                 shap_values = {
                     name: round(float(val), 4)
-                    for name, val in zip(self._feature_names, sv[0])
+                    for name, val in zip(names, sv[0])
                 }
             except Exception:
                 pass

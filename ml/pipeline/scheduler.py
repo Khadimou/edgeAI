@@ -182,6 +182,37 @@ def _load_wc_inference():
         return None
 
 
+async def _backfill_shots_daily(session: AsyncSession, redis) -> bool:
+    """
+    Backfill quotidien des shots/SOT/corners/fouls depuis football-data.co.uk.
+    Lock 22h pour éviter de spam fdco. Ne fetch que les 2 dernières saisons
+    (mode --recent) → ~10 CSV à télécharger, ~30s total.
+    """
+    lock_key = "shots:backfill:lock"
+    if await redis.get(lock_key):
+        return False
+    try:
+        import sys, importlib
+        ml_root = Path(__file__).parent.parent
+        if str(ml_root) not in sys.path:
+            sys.path.insert(0, str(ml_root))
+        cs = importlib.import_module("collect_shots")
+        # Ne fetch que les 2 dernières saisons (saison en cours + précédente)
+        seasons = cs.ALL_SEASONS[-2:]
+        df = cs.fetch_all(seasons)
+        if df.empty:
+            log.warning("shots_backfill_no_data")
+            return False
+        # UPDATE DB seulement (pas le CSV local, on est en prod)
+        stats = await cs.update_db(df)
+        await redis.setex(lock_key, 22 * 3600, "1")
+        log.info("shots_backfill_done", **stats, n_fetched=len(df))
+        return True
+    except Exception as e:
+        log.error("shots_backfill_error", error=str(e))
+        return False
+
+
 async def _refresh_intl_matches_csv(redis) -> bool:
     """
     Re-fetch le CSV des matchs internationaux 1×/jour (lock 22h).
@@ -466,6 +497,10 @@ async def run_pipeline():
             # Détection de dérive + rollback si modèle dégradé
             drift_report = await check_drift_and_rollback(session)
             log.info("drift_check", **{k: v for k, v in drift_report.items() if v is not None})
+
+            # Backfill quotidien shots/SOT depuis fdco (Phase 2 features)
+            # 22h lock → ~1×/jour, ~30s d'API calls
+            await _backfill_shots_daily(session, redis)
 
             # Réentraînement automatique quotidien (1X2 + OU + AH, gates inclus)
             retrain_results = await maybe_auto_retrain_all(session)
@@ -838,12 +873,25 @@ async def _generate_ou_prediction(
     standings: dict | None = None,
     total_teams: int = 20,
 ) -> dict | None:
-    """Génère les probas O/U pour un match foot. Utilise FOOT_STATE (52 features)."""
+    """Génère les probas O/U pour un match foot.
+
+    OU utilise les 52 features Phase 1 (sans shots/SOT) — backtest a montré
+    que les features Phase 2 (shots) dégradent l'OU (-12pts ROI).
+    """
     cal = ou_bundle.get("model")
     if cal is None:
         return None
     features = await _build_foot_features(match_data, session, standings, total_teams)
-    X = features.to_array().reshape(1, -1)
+    # Slice selon le schema attendu par le modèle (52 phase1 ou 67 full)
+    try:
+        inner = cal.calibrated_classifiers_[0].estimator
+        n_expected = int(getattr(inner, "n_features_in_", 52))
+    except Exception:
+        n_expected = 52
+    if n_expected == 52:
+        X = features.to_array_phase1().reshape(1, -1)
+    else:
+        X = features.to_array().reshape(1, -1)
     try:
         proba = cal.predict_proba(X)[0]
         # Le modèle est entraîné avec label=1 → Over
@@ -863,12 +911,25 @@ async def _generate_ah_prediction(
     standings: dict | None = None,
     total_teams: int = 20,
 ) -> dict | None:
-    """Génère les probas Asian Handicap (P(home covers) / P(away covers))."""
+    """Génère les probas Asian Handicap (P(home covers) / P(away covers)).
+
+    AH utilise les 67 features complètes (Phase 1 + Phase 2 shots/SOT) —
+    backtest a montré que les shots boostent l'AH de +2.1pts ROI (+2.79% → +4.87%).
+    Fallback : si modèle ancien (52 ou 36), slice approprié.
+    """
     cal = ah_bundle.get("model")
     if cal is None:
         return None
     features = await _build_foot_features(match_data, session, standings, total_teams)
-    X = features.to_array().reshape(1, -1)
+    try:
+        inner = cal.calibrated_classifiers_[0].estimator
+        n_expected = int(getattr(inner, "n_features_in_", 67))
+    except Exception:
+        n_expected = 67
+    if n_expected == 52:
+        X = features.to_array_phase1().reshape(1, -1)
+    else:
+        X = features.to_array().reshape(1, -1)
     try:
         proba = cal.predict_proba(X)[0]
         # Le modèle est entraîné avec label=1 → Home couvre

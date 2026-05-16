@@ -316,7 +316,9 @@ def run_backtest(initial_bankroll=100.0, edge_threshold=0.03, edge_max=0.20, kel
         sys.exit(1)
 
     print("\n[3/4] OOF predictions (TimeSeriesSplit binaire)...")
-    feature_cols = MatchFeatures.feature_names()
+    # OU utilise les features Phase 1 (52) — shots Phase 2 dégradent l'OU
+    # (mean-reversion des goals, overfitting sur petit edge)
+    feature_cols = MatchFeatures.feature_names_phase1()
     merged = merged.sort_values("match_date").reset_index(drop=True)
     X = merged[feature_cols].values.astype(np.float32)
     y = merged["label"].values.astype(int)  # 1 = Over

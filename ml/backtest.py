@@ -510,7 +510,9 @@ def run_backtest(
         print(f"  Noms football-data.co.uk non mappés (top 20): {unmatched_fd}")
 
     print("\n[3/4] OOF predictions (TimeSeriesSplit 5 folds)...")
-    feature_cols = MatchFeatures.feature_names()
+    # 1X2 utilise les features Phase 1 (52) — backtest a montré que les shots
+    # Phase 2 dégradent la perf en mode 3-class directionnel
+    feature_cols = MatchFeatures.feature_names_phase1()
     merged = merged.sort_values("match_date").reset_index(drop=True)
     X = merged[feature_cols].values.astype(np.float32)
     y = merged["label"].values.astype(int)

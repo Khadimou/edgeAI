@@ -91,7 +91,8 @@ def _label_ou_25(hs: int, as_: int) -> int:
 
 
 def _build_dataset(rows: list, min_history: int = 3,
-                   label_func=_label_1x2) -> tuple[np.ndarray, np.ndarray, "pd.DataFrame"]:
+                   label_func=_label_1x2,
+                   use_phase1_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """
     Construit X, y depuis une liste de tuples DB.
     Colonnes attendues : home_team, away_team, home_score, away_score, match_date,
@@ -103,6 +104,10 @@ def _build_dataset(rows: list, min_history: int = 3,
         "home_team", "away_team", "home_score", "away_score", "date",
         "league", "ht_home_score", "ht_away_score",
         "home_yellow_cards", "away_yellow_cards",
+        # Phase 2 : shots/SOT/corners (peuvent être NULL si pas encore backfillé)
+        "home_shots", "away_shots",
+        "home_shots_on_target", "away_shots_on_target",
+        "home_corners", "away_corners",
     ])
     df["date"] = pd.to_datetime(df["date"])
     df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce")
@@ -157,7 +162,9 @@ def _build_dataset(rows: list, min_history: int = 3,
             elo_away_venue=elo_away_venue,
         )
 
-        feature_rows.append(feat.to_array())
+        # Slice features selon le subset demandé (phase1 = 52 sans shots, full = 67)
+        arr = feat.to_array_phase1() if use_phase1_only else feat.to_array()
+        feature_rows.append(arr)
 
         hs, as_ = int(row["home_score"]), int(row["away_score"])
         labels.append(label_func(hs, as_))
@@ -167,10 +174,12 @@ def _build_dataset(rows: list, min_history: int = 3,
         update_elo_venue(elo_home_venue, elo_away_venue,
                          row["home_team"], row["away_team"], hs, as_)
 
-    log.info("dataset_built", total=len(df), examples=len(feature_rows), skipped=skipped)
+    log.info("dataset_built", total=len(df), examples=len(feature_rows), skipped=skipped,
+             use_phase1_only=use_phase1_only)
 
+    n_features = len(MatchFeatures.feature_names_phase1()) if use_phase1_only else len(FEATURE_COLS)
     if not feature_rows:
-        return np.zeros((0, len(FEATURE_COLS)), dtype=np.float32), np.zeros(0, dtype=int)
+        return np.zeros((0, n_features), dtype=np.float32), np.zeros(0, dtype=int)
 
     return np.array(feature_rows, dtype=np.float32), np.array(labels, dtype=int)
 
@@ -395,7 +404,8 @@ async def maybe_auto_retrain(session: AsyncSession, force: bool = False) -> bool
         return False
 
     # Construit le dataset de features
-    X, y = _build_dataset(rows)
+    # 1X2 utilise les 52 features Phase 1 (shots/SOT dégradent le directionnel)
+    X, y = _build_dataset(rows, use_phase1_only=True)
 
     if len(X) < 100:
         log.warning("auto_retrain_insufficient_features", count=len(X))
@@ -483,7 +493,10 @@ async def maybe_auto_retrain_ou(session: AsyncSession, force: bool = False) -> b
     result = await session.execute(text("""
         SELECT home_team, away_team, home_score, away_score, match_date, league,
                ht_home_score, ht_away_score,
-               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0),
+               home_shots, away_shots,
+               home_shots_on_target, away_shots_on_target,
+               home_corners, away_corners
         FROM matches
         WHERE status = 'FINISHED'
           AND home_score IS NOT NULL AND away_score IS NOT NULL
@@ -494,7 +507,8 @@ async def maybe_auto_retrain_ou(session: AsyncSession, force: bool = False) -> b
         log.warning("auto_retrain_ou_insufficient_total", count=len(rows))
         return False
 
-    X, y = _build_dataset(rows, label_func=_label_ou_25)
+    # OU utilise les 52 features Phase 1 (shots dégradent l'OU de -12pts ROI)
+    X, y = _build_dataset(rows, label_func=_label_ou_25, use_phase1_only=True)
     if len(X) < 100:
         log.warning("auto_retrain_ou_insufficient_features", count=len(X))
         return False
@@ -588,7 +602,10 @@ async def maybe_auto_retrain_ah(session: AsyncSession, force: bool = False) -> b
     result = await session.execute(text("""
         SELECT home_team, away_team, home_score, away_score, match_date, league,
                ht_home_score, ht_away_score,
-               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0),
+               home_shots, away_shots,
+               home_shots_on_target, away_shots_on_target,
+               home_corners, away_corners
         FROM matches
         WHERE status = 'FINISHED'
           AND home_score IS NOT NULL AND away_score IS NOT NULL
@@ -604,6 +621,10 @@ async def maybe_auto_retrain_ah(session: AsyncSession, force: bool = False) -> b
         "home_team", "away_team", "home_score", "away_score", "date",
         "league", "ht_home_score", "ht_away_score",
         "home_yellow_cards", "away_yellow_cards",
+        # Phase 2 : shots/SOT/corners (peuvent être NULL si pas encore backfillé)
+        "home_shots", "away_shots",
+        "home_shots_on_target", "away_shots_on_target",
+        "home_corners", "away_corners",
     ])
     df["date"] = pd.to_datetime(df["date"])
     df = df.dropna(subset=["home_score", "away_score"])

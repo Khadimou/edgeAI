@@ -17,6 +17,19 @@ ELO_K = 20.0
 ELO_HOME_ADV = 65.0  # ~0.4 goal advantage en moyenne sur big-5
 ELO_INIT = 1500.0
 
+# Noms des features Phase 2 (shots/SOT/corners depuis football-data.co.uk).
+# Backtest a montré que ces features améliorent AH mais détériorent 1X2/OU.
+# → on les EXCLUT du training et inference des modèles 1X2/OU via feature_names_phase1()
+PHASE2_FEATURE_NAMES = frozenset([
+    "home_shots_avg", "away_shots_avg",
+    "home_sot_avg", "away_sot_avg",
+    "home_shots_against_avg", "away_shots_against_avg",
+    "home_corners_avg", "away_corners_avg",
+    "home_shot_accuracy", "away_shot_accuracy",
+    "home_shot_conversion", "away_shot_conversion",
+    "home_xg_proxy", "away_xg_proxy", "xg_diff",
+])
+
 
 @dataclass
 class MatchFeatures:
@@ -108,15 +121,60 @@ class MatchFeatures:
     home_btts_rate: float = 0.5
     away_btts_rate: float = 0.5
 
+    # ─── Phase 2 features (shots/SOT/corners depuis fdco) ──────
+    # Avg sur 10 derniers matchs
+    home_shots_avg: float = 12.0  # baseline ~12 shots / match en big-5
+    away_shots_avg: float = 12.0
+    home_sot_avg: float = 4.0     # baseline ~4 SOT / match
+    away_sot_avg: float = 4.0
+    home_shots_against_avg: float = 12.0
+    away_shots_against_avg: float = 12.0
+    home_corners_avg: float = 5.0
+    away_corners_avg: float = 5.0
+
+    # Efficacité : SOT / shots (précision)
+    home_shot_accuracy: float = 0.33
+    away_shot_accuracy: float = 0.33
+
+    # Conversion : goals / shots sur 10 derniers (clinique vs gâcheur)
+    home_shot_conversion: float = 0.10
+    away_shot_conversion: float = 0.10
+
+    # xG proxy (Caley/Eastwood weighting approximé):
+    # xG ≈ 0.05 × non_sot_shots + 0.30 × sot
+    # Sert d'estimateur de qualité offensive intrinsèque
+    home_xg_proxy: float = 1.4
+    away_xg_proxy: float = 1.4
+    xg_diff: float = 0.0          # home - away
+
     def to_array(self) -> np.ndarray:
         return np.array(
             [getattr(self, f) for f in self.__dataclass_fields__],
             dtype=np.float32,
         )
 
+    def to_array_phase1(self) -> np.ndarray:
+        """Retourne uniquement les 52 features Phase 1 (sans shots/SOT/corners).
+
+        Backtests montrent que les features Phase 2 (shots) :
+        - améliorent AH (+2.1pts ROI) → utiliser to_array() pour AH
+        - dégradent 1X2 (-2.5pts) et OU (-12pts) → utiliser to_array_phase1()
+        """
+        return np.array(
+            [getattr(self, f) for f in self.__dataclass_fields__
+             if f not in PHASE2_FEATURE_NAMES],
+            dtype=np.float32,
+        )
+
     @classmethod
     def feature_names(cls) -> list[str]:
         return [f.name for f in cls.__dataclass_fields__.values()]
+
+    @classmethod
+    def feature_names_phase1(cls) -> list[str]:
+        """Sous-ensemble Phase 1 (52 fields, sans les shots/SOT/corners Phase 2)."""
+        return [f.name for f in cls.__dataclass_fields__.values()
+                if f.name not in PHASE2_FEATURE_NAMES]
 
 
 def compute_features_from_history(
@@ -278,6 +336,14 @@ def compute_features_from_history(
         compute_advanced_features(
             feat, home_team, away_team, match_date,
             historical_df, elo_general, window=10,
+        )
+
+    # --- Phase 2 : shots/SOT/corners features (depuis fdco backfill) ---
+    # Skip silencieusement si les colonnes ne sont pas dispos (legacy DB)
+    if "home_shots" in historical_df.columns:
+        compute_shots_features(
+            feat, home_team, away_team, match_date,
+            historical_df, window=10,
         )
 
     return feat
@@ -585,6 +651,111 @@ def compute_advanced_features(
         feat.away_unbeaten_streak, feat.away_losing_streak = _streaks(away_hist, away_team)
         feat.away_form_vs_expected = _form_vs_expected(away_hist, away_team, elo_general)
         feat.away_btts_rate = _btts_rate(away_hist)
+
+
+# ──────────────────────────────────────────────────────────
+# Phase 2 : shots/SOT/corners features
+# ──────────────────────────────────────────────────────────
+
+def _shots_stats(hist: pd.DataFrame, team: str) -> dict:
+    """
+    Pour un team sur les `hist` matchs : calcule shots/SOT/corners moyens
+    + shots conceded + accuracy (sot/shots) + conversion (goals/shots).
+
+    Retourne defaults si les colonnes shots ne sont pas dispo (None/NaN).
+    """
+    defaults = {
+        "shots_avg": 12.0, "sot_avg": 4.0, "shots_against_avg": 12.0,
+        "corners_avg": 5.0, "accuracy": 0.33, "conversion": 0.10,
+        "xg_proxy": 1.4,
+    }
+    if len(hist) == 0:
+        return defaults
+    if "home_shots" not in hist.columns:
+        return defaults
+
+    shots_for = []
+    shots_against = []
+    sot_for = []
+    corners_for = []
+    goals_for = []
+    for _, r in hist.iterrows():
+        is_home = (r["home_team"] == team)
+        hs, as_ = r.get("home_shots"), r.get("away_shots")
+        hst, ast = r.get("home_shots_on_target"), r.get("away_shots_on_target")
+        hc, ac = r.get("home_corners"), r.get("away_corners")
+        ghome, gaway = r["home_score"], r["away_score"]
+        if is_home:
+            if pd.notna(hs): shots_for.append(float(hs))
+            if pd.notna(as_): shots_against.append(float(as_))
+            if pd.notna(hst): sot_for.append(float(hst))
+            if pd.notna(hc): corners_for.append(float(hc))
+            goals_for.append(float(ghome))
+        else:
+            if pd.notna(as_): shots_for.append(float(as_))
+            if pd.notna(hs): shots_against.append(float(hs))
+            if pd.notna(ast): sot_for.append(float(ast))
+            if pd.notna(ac): corners_for.append(float(ac))
+            goals_for.append(float(gaway))
+
+    if not shots_for:
+        return defaults
+
+    shots_avg = float(np.mean(shots_for))
+    sot_avg = float(np.mean(sot_for)) if sot_for else 4.0
+    shots_against_avg = float(np.mean(shots_against)) if shots_against else 12.0
+    corners_avg = float(np.mean(corners_for)) if corners_for else 5.0
+    goals_avg = float(np.mean(goals_for))
+
+    accuracy = (sot_avg / shots_avg) if shots_avg > 0 else 0.33
+    conversion = (goals_avg / shots_avg) if shots_avg > 0 else 0.10
+    # xG proxy : Caley-like weighting approx :
+    #   xG ≈ 0.05 × (shots - sot) + 0.30 × sot
+    non_sot = max(shots_avg - sot_avg, 0.0)
+    xg_proxy = 0.05 * non_sot + 0.30 * sot_avg
+
+    return {
+        "shots_avg": shots_avg, "sot_avg": sot_avg,
+        "shots_against_avg": shots_against_avg,
+        "corners_avg": corners_avg,
+        "accuracy": float(min(max(accuracy, 0.0), 1.0)),
+        "conversion": float(min(max(conversion, 0.0), 1.0)),
+        "xg_proxy": float(xg_proxy),
+    }
+
+
+def compute_shots_features(
+    feat: MatchFeatures,
+    home_team: str, away_team: str,
+    match_date: pd.Timestamp,
+    historical_df: pd.DataFrame,
+    window: int = 10,
+) -> None:
+    """Remplit les shots/SOT/corners features in-place."""
+    home_hist = _get_team_history(historical_df, home_team, match_date, window)
+    away_hist = _get_team_history(historical_df, away_team, match_date, window)
+
+    if len(home_hist) > 0:
+        s = _shots_stats(home_hist, home_team)
+        feat.home_shots_avg = s["shots_avg"]
+        feat.home_sot_avg = s["sot_avg"]
+        feat.home_shots_against_avg = s["shots_against_avg"]
+        feat.home_corners_avg = s["corners_avg"]
+        feat.home_shot_accuracy = s["accuracy"]
+        feat.home_shot_conversion = s["conversion"]
+        feat.home_xg_proxy = s["xg_proxy"]
+
+    if len(away_hist) > 0:
+        s = _shots_stats(away_hist, away_team)
+        feat.away_shots_avg = s["shots_avg"]
+        feat.away_sot_avg = s["sot_avg"]
+        feat.away_shots_against_avg = s["shots_against_avg"]
+        feat.away_corners_avg = s["corners_avg"]
+        feat.away_shot_accuracy = s["accuracy"]
+        feat.away_shot_conversion = s["conversion"]
+        feat.away_xg_proxy = s["xg_proxy"]
+
+    feat.xg_diff = feat.home_xg_proxy - feat.away_xg_proxy
 
 
 # ──────────────────────────────────────────────────────────

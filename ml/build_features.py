@@ -38,7 +38,10 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
     print(f"  {len(df)} matchs avec résultats")
 
     # Colonnes optionnelles — remplir avec NaN si absentes
-    for col in ["ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards"]:
+    for col in ["ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards",
+                # Phase 2 : shots/SOT/corners depuis fdco
+                "home_shots", "away_shots", "home_shots_on_target", "away_shots_on_target",
+                "home_corners", "away_corners", "home_fouls", "away_fouls"]:
         if col not in df.columns:
             df[col] = np.nan
 

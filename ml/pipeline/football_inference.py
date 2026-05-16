@@ -68,7 +68,10 @@ class FootballInferenceState:
             result = await session.execute(text("""
                 SELECT home_team, away_team, home_score, away_score, match_date, league,
                        ht_home_score, ht_away_score,
-                       COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+                       COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0),
+                       home_shots, away_shots,
+                       home_shots_on_target, away_shots_on_target,
+                       home_corners, away_corners
                 FROM matches
                 WHERE status = 'FINISHED'
                   AND home_score IS NOT NULL
@@ -84,6 +87,9 @@ class FootballInferenceState:
             df = pd.DataFrame(rows, columns=[
                 "home_team", "away_team", "home_score", "away_score", "date", "league",
                 "ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards",
+                "home_shots", "away_shots",
+                "home_shots_on_target", "away_shots_on_target",
+                "home_corners", "away_corners",
             ])
             df["date"] = pd.to_datetime(df["date"])
             df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce")

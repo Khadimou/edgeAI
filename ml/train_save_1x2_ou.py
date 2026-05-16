@@ -45,7 +45,9 @@ def train_save(name: str, dataset_path: Path, params: dict,
     print(f"\n[{name}] Loading {dataset_path}...")
     df = pd.read_csv(dataset_path, parse_dates=["match_date"])
     df = df.sort_values("match_date").reset_index(drop=True)
-    feature_cols = MatchFeatures.feature_names()
+    # 1X2 et OU utilisent les 52 features Phase 1 (sans shots/SOT)
+    # Backtest a montré que Phase 2 features dégradent ces 2 marchés
+    feature_cols = MatchFeatures.feature_names_phase1()
     X = df[feature_cols].values.astype(np.float32)
     y = df["label"].values.astype(int)
     print(f"  {len(X)} samples, {X.shape[1]} features, dist: {np.bincount(y)}")
