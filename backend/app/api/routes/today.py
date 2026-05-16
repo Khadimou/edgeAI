@@ -94,6 +94,7 @@ async def get_today(
                     bankroll=bankroll or 100.0,
                     risk_profile=RiskProfile(user.risk_profile),
                     kelly_user_fraction=user.kelly_fraction,
+                    market="1X2",
                 )
                 if kelly.is_value_bet:
                     value_bets.append({
@@ -125,6 +126,7 @@ async def get_today(
                     bankroll=bankroll or 100.0,
                     risk_profile=RiskProfile(user.risk_profile),
                     kelly_user_fraction=user.kelly_fraction,
+                    market="OU_2_5",
                 )
                 if kelly.is_value_bet:
                     value_bets.append({
@@ -160,6 +162,7 @@ async def get_today(
                     bankroll=bankroll or 100.0,
                     risk_profile=RiskProfile(user.risk_profile),
                     kelly_user_fraction=user.kelly_fraction,
+                    market="AH",
                 )
                 if kelly.is_value_bet:
                     team_name = match.home_team if outcome == "AH_HOME" else match.away_team

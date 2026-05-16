@@ -17,7 +17,17 @@ KELLY_MULTIPLIERS = {
 MAX_BET_FRACTION = 0.10
 # Seuils calibrés par le backtest historique (edge ∈ [8%, 20%] = sweet spot)
 MIN_EDGE_THRESHOLD = 0.08
-MAX_EDGE_THRESHOLD = 0.20  # au-delà = hallucination (modèle mal calibré)
+MAX_EDGE_THRESHOLD = 0.20  # fallback global (rétro-compat)
+
+# Edge max par marché — calibré par sweep edge_max sur 17 678 matchs big-5 :
+# - 1X2 : passer de 20% à 30% améliore ROI -3.2% → -1.6% (+1.6pts)
+# - OU  : 15% reste optimal (au-delà : -7.5% vs -2.1%)
+# - AH  : passer de 20% à 30% améliore ROI +4.87% → +5.97% (+1.1pts)
+MAX_EDGE_BY_MARKET = {
+    "1X2": 0.30,
+    "OU_2_5": 0.15,
+    "AH": 0.30,
+}
 
 
 @dataclass
@@ -36,12 +46,15 @@ def calculate_kelly(
     bankroll: float,
     risk_profile: RiskProfile = RiskProfile.MODERATE,
     kelly_user_fraction: float = 0.50,
+    market: str = "1X2",
 ) -> KellyResult:
     """
     Calcule la mise optimale selon le critère de Kelly fractionnel.
 
     f* = (p * b - q) / b
     où b = odds - 1, q = 1 - p
+
+    market : "1X2", "OU_2_5", "AH" — détermine le seuil max edge filtré
     """
     b = odds - 1.0
     q = 1.0 - prob
@@ -64,14 +77,16 @@ def calculate_kelly(
         )
 
     # Edge "trop élevé" = signe de mauvaise calibration → on filtre
-    if edge > MAX_EDGE_THRESHOLD:
+    # Seuil par marché (calibré par backtest sweep)
+    max_edge = MAX_EDGE_BY_MARKET.get(market, MAX_EDGE_THRESHOLD)
+    if edge > max_edge:
         return KellyResult(
             kelly_fraction=kelly_full,
             adjusted_fraction=0,
             recommended_amount=0,
             edge=edge,
             is_value_bet=False,
-            reason=f"Edge {edge:.1%} > {MAX_EDGE_THRESHOLD:.0%} (probable hallucination du modèle)",
+            reason=f"Edge {edge:.1%} > {max_edge:.0%} ({market}, probable hallucination)",
         )
 
     # Kelly fractionnel selon profil de risque

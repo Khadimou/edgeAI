@@ -89,6 +89,7 @@ def _find_best_bet(prediction, match: Match, user: User):
             bankroll=user.bankroll or 100.0,
             risk_profile=RiskProfile(user.risk_profile),
             kelly_user_fraction=user.kelly_fraction,
+            market="1X2",
         )
         if kelly.is_value_bet and (best_kelly is None or kelly.edge > best_kelly.edge):
             best_kelly = kelly
