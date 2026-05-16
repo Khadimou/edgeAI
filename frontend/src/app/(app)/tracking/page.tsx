@@ -269,7 +269,10 @@ export default function TrackingPage() {
               Closing Line Value (CLV)
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Mesure si on identifie de la value AVANT que le marché ne s'ajuste. CLV positif = preuve mathématique qu'on bat le marché à long terme (la métrique gold standard utilisée par les pros).
+              Mesure si on identifie la value AVANT que le marché ne s'ajuste. Formule : <code>(opening / closing) - 1</code>.
+              <br/>• <span className="text-green-400">CLV {'>'}  0</span> : la cote a BAISSÉ entre l'opening et le closing → le marché valide notre prédiction → on a anticipé.
+              <br/>• <span className="text-red-400">CLV {'<'} 0</span> : la cote a MONTÉ → le marché s'éloigne de notre prédiction → on a fait un mauvais timing.
+              <br/>Sur un échantillon ≥ 30 paris, un CLV positif moyen prouve qu'on bat le marché à long terme (KPI gold standard des pros).
             </p>
           </div>
         </div>
@@ -468,11 +471,14 @@ export default function TrackingPage() {
                       </span>
                     </td>
                     <td className="py-1.5 px-2 truncate max-w-[140px]">{b.outcome_label}</td>
-                    <td className="py-1.5 px-2 text-right font-mono">
-                      {b.odds.toFixed(2)}
+                    <td className="py-1.5 px-2 text-right font-mono"
+                        title={b.opening_odds
+                          ? `Opening: ${b.opening_odds.toFixed(2)} → Closing: ${b.odds.toFixed(2)}`
+                          : `Cote actuelle: ${b.odds.toFixed(2)}`}>
                       {b.opening_odds && b.opening_odds !== b.odds && (
-                        <span className="text-[9px] text-gray-600 ml-1">→{b.opening_odds.toFixed(2)}</span>
+                        <span className="text-[9px] text-gray-600 mr-1">{b.opening_odds.toFixed(2)}→</span>
                       )}
+                      {b.odds.toFixed(2)}
                     </td>
                     <td className="py-1.5 px-2 text-right">{b.edge_percent.toFixed(0)}%</td>
                     <td className={cn(
