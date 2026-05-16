@@ -18,6 +18,7 @@ from pipeline.features import (
     compute_features_from_history,
     compute_standings_from_history,
     MatchFeatures,
+    init_elo, update_elo, update_elo_venue,
 )
 
 OUTCOMES = ["HOME", "DRAW", "AWAY"]
@@ -56,6 +57,11 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
     # Déduire la ligue depuis la colonne "league" si disponible
     has_league = "league" in df.columns
 
+    # ELO state maintenu chronologiquement (calculé avant le match, mis à jour après)
+    elo_general = init_elo()
+    elo_home_venue = init_elo()
+    elo_away_venue = init_elo()
+
     feature_rows = []
     skipped = 0
 
@@ -72,6 +78,12 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
         ]
 
         if len(home_hist) < min_history or len(away_hist) < min_history:
+            # Encore mettre à jour ELO même si pas dans le dataset (apprentissage state)
+            update_elo(elo_general, row["home_team"], row["away_team"],
+                       int(row["home_score"]), int(row["away_score"]))
+            update_elo_venue(elo_home_venue, elo_away_venue,
+                             row["home_team"], row["away_team"],
+                             int(row["home_score"]), int(row["away_score"]))
             skipped += 1
             continue
 
@@ -92,7 +104,17 @@ def build(input_path: Path, output_path: Path, min_history: int = 3):
             odds_df=odds_df,
             standings=standings,
             total_teams=total_teams,
+            elo_general=elo_general,
+            elo_home_venue=elo_home_venue,
+            elo_away_venue=elo_away_venue,
         )
+
+        # Update ELO state APRÈS calcul des features (pas de data leakage)
+        update_elo(elo_general, row["home_team"], row["away_team"],
+                   int(row["home_score"]), int(row["away_score"]))
+        update_elo_venue(elo_home_venue, elo_away_venue,
+                         row["home_team"], row["away_team"],
+                         int(row["home_score"]), int(row["away_score"]))
 
         feat_dict = {name: val for name, val in zip(
             MatchFeatures.feature_names(), feat.to_array()

@@ -28,6 +28,7 @@ from .features import (
     compute_features_from_history,
     compute_standings_from_history,
     MatchFeatures,
+    init_elo, update_elo, update_elo_venue,
 )
 from .model import EdgeAIModel
 
@@ -39,16 +40,31 @@ RETRAIN_MIN_SAMPLES = int(os.getenv("RETRAIN_MIN_SAMPLES", "50"))
 RETRAIN_COOLDOWN_HOURS = int(os.getenv("RETRAIN_COOLDOWN_HOURS", "24"))
 FEATURE_COLS = MatchFeatures.feature_names()
 
+# Gate de déploiement : ne deploie que si log-loss n'empire pas trop
+# ET si les seuils minimaux (du model.py) sont respectés
+MAX_LOG_LOSS_REGRESSION = float(os.getenv("MAX_LOG_LOSS_REGRESSION", "0.05"))  # 5% pire max
+MIN_DEPLOY_ACCURACY = float(os.getenv("MIN_DEPLOY_ACCURACY", "0.44"))
+MAX_DEPLOY_LOG_LOSS = float(os.getenv("MAX_DEPLOY_LOG_LOSS", "1.10"))
+
 
 # ── State helpers ──────────────────────────────────────────────────────────────
 
-def _load_state() -> dict:
-    if STATE_FILE.exists():
+def _state_path(market: str = "1x2") -> Path:
+    """Path du state file pour un marché donné."""
+    if market == "1x2":
+        return STATE_FILE  # backward compat : training_state.json
+    return MODEL_DIR / f"training_state_{market}.json"
+
+
+def _load_state(market: str = "1x2") -> dict:
+    path = _state_path(market)
+    if path.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            return json.loads(path.read_text())
         except Exception:
             pass
     return {
+        "market": market,
         "last_trained": "2020-01-01T00:00:00",
         "current_log_loss": 9999.0,
         "current_accuracy": 0.0,
@@ -57,19 +73,31 @@ def _load_state() -> dict:
     }
 
 
-def _save_state(state: dict):
+def _save_state(state: dict, market: str = "1x2"):
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    _state_path(market).write_text(json.dumps(state, indent=2))
 
 
 # ── Feature builder (in-memory, mirrors build_features.py) ────────────────────
 
-def _build_dataset(rows: list, min_history: int = 3) -> tuple[np.ndarray, np.ndarray]:
+def _label_1x2(hs: int, as_: int) -> int:
+    if hs > as_: return 0  # HOME
+    if hs == as_: return 1  # DRAW
+    return 2  # AWAY
+
+
+def _label_ou_25(hs: int, as_: int) -> int:
+    return 1 if hs + as_ > 2.5 else 0  # 1 = Over
+
+
+def _build_dataset(rows: list, min_history: int = 3,
+                   label_func=_label_1x2) -> tuple[np.ndarray, np.ndarray, "pd.DataFrame"]:
     """
     Construit X, y depuis une liste de tuples DB.
     Colonnes attendues : home_team, away_team, home_score, away_score, match_date,
                         league, ht_home_score, ht_away_score,
                         home_yellow_cards, away_yellow_cards
+
     """
     df = pd.DataFrame(rows, columns=[
         "home_team", "away_team", "home_score", "away_score", "date",
@@ -83,6 +111,11 @@ def _build_dataset(rows: list, min_history: int = 3) -> tuple[np.ndarray, np.nda
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
     df = df.sort_values("date").reset_index(drop=True)
+
+    # ELO state chronologique (Phase 1)
+    elo_general = init_elo()
+    elo_home_venue = init_elo()
+    elo_away_venue = init_elo()
 
     feature_rows = []
     labels = []
@@ -99,6 +132,12 @@ def _build_dataset(rows: list, min_history: int = 3) -> tuple[np.ndarray, np.nda
         ])
 
         if home_hist_count < min_history or away_hist_count < min_history:
+            # Update ELO même si on n'inclut pas dans le dataset
+            update_elo(elo_general, row["home_team"], row["away_team"],
+                       int(row["home_score"]), int(row["away_score"]))
+            update_elo_venue(elo_home_venue, elo_away_venue,
+                             row["home_team"], row["away_team"],
+                             int(row["home_score"]), int(row["away_score"]))
             skipped += 1
             continue
 
@@ -113,17 +152,20 @@ def _build_dataset(rows: list, min_history: int = 3) -> tuple[np.ndarray, np.nda
             historical_df=past,
             standings=standings,
             total_teams=total_teams,
+            elo_general=elo_general,
+            elo_home_venue=elo_home_venue,
+            elo_away_venue=elo_away_venue,
         )
 
         feature_rows.append(feat.to_array())
 
-        hs, as_ = row["home_score"], row["away_score"]
-        if hs > as_:
-            labels.append(0)
-        elif hs == as_:
-            labels.append(1)
-        else:
-            labels.append(2)
+        hs, as_ = int(row["home_score"]), int(row["away_score"])
+        labels.append(label_func(hs, as_))
+
+        # Update ELO APRÈS calcul features (pas de data leakage)
+        update_elo(elo_general, row["home_team"], row["away_team"], hs, as_)
+        update_elo_venue(elo_home_venue, elo_away_venue,
+                         row["home_team"], row["away_team"], hs, as_)
 
     log.info("dataset_built", total=len(df), examples=len(feature_rows), skipped=skipped)
 
@@ -135,11 +177,21 @@ def _build_dataset(rows: list, min_history: int = 3) -> tuple[np.ndarray, np.nda
 
 # ── Training ───────────────────────────────────────────────────────────────────
 
-def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None) -> tuple[EdgeAIModel, dict]:
+def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None,
+                       multi: bool = True) -> tuple[EdgeAIModel, dict]:
+    """Train XGBoost + sigmoid calibration. multi=True → 3-class softprob, sinon binary."""
     from xgboost import XGBClassifier
     from sklearn.calibration import CalibratedClassifierCV
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import log_loss, accuracy_score, brier_score_loss
+
+    if multi:
+        objective_params = {"objective": "multi:softprob", "num_class": 3,
+                            "eval_metric": "mlogloss"}
+        n_classes = 3
+    else:
+        objective_params = {"objective": "binary:logistic", "eval_metric": "logloss"}
+        n_classes = 2
 
     default_params = {
         "n_estimators": 300,
@@ -147,21 +199,18 @@ def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None) -> tup
         "learning_rate": 0.05,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
-        "objective": "multi:softprob",
-        "num_class": 3,
-        "eval_metric": "mlogloss",
+        **objective_params,
         "random_state": 42,
         "n_jobs": -1,
     }
     if params:
         for k, v in params.items():
             default_params[k] = v
-        default_params.update({"objective": "multi:softprob", "num_class": 3,
-                                "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1})
+        default_params.update({**objective_params, "random_state": 42, "n_jobs": -1})
 
     # OOF cross-validation temporelle
     tscv = TimeSeriesSplit(n_splits=5)
-    oof = np.zeros((len(y), 3))
+    oof = np.zeros((len(y), n_classes))
 
     for train_idx, val_idx in tscv.split(X):
         clf = CalibratedClassifierCV(XGBClassifier(**default_params), method="sigmoid", cv=3)
@@ -170,7 +219,10 @@ def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None) -> tup
 
     ll = float(log_loss(y, oof))
     acc = float(accuracy_score(y, oof.argmax(axis=1)))
-    brier = float(brier_score_loss((y == 0).astype(int), oof[:, 0]))
+    if multi:
+        brier = float(brier_score_loss((y == 0).astype(int), oof[:, 0]))
+    else:
+        brier = float(brier_score_loss(y, oof[:, 1]))
 
     # Modèle final sur tout le dataset
     model = EdgeAIModel()
@@ -197,14 +249,23 @@ def _train_with_params(X: np.ndarray, y: np.ndarray, params: dict | None) -> tup
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-def _deploy(model: EdgeAIModel, metrics: dict):
+def _deploy(model: EdgeAIModel, metrics: dict, suffix: str = "", market: str = "1X2"):
+    """suffix: '' (1X2), '_ou' (OU 2.5), '_ah' (AH). Met à jour model{suffix}_latest.joblib."""
+    import joblib
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    path = MODEL_DIR / f"model_{model.version}.joblib"
-    model.save(path)
-    (MODEL_DIR / f"metrics_{model.version}.json").write_text(json.dumps(metrics, indent=2))
-    shutil.copy2(path, MODEL_DIR / "model_latest.joblib")
-    log.info("model_deployed", version=model.version, log_loss=metrics["log_loss"],
-             accuracy=metrics["accuracy"])
+    prefix = "model" if not suffix else f"model_{suffix.lstrip('_')}"
+    path = MODEL_DIR / f"{prefix}_{model.version}.joblib"
+    # Use joblib with market info embedded (consistent avec les autres modèles)
+    payload = {"model": model.model, "version": model.version, "market": market}
+    if model.explainer is not None:
+        payload["explainer"] = model.explainer
+    joblib.dump(payload, path)
+    (MODEL_DIR / f"metrics_{prefix.replace('model', '').lstrip('_') or '1x2'}_{model.version}.json").write_text(
+        json.dumps({**metrics, "market": market}, indent=2))
+    latest = MODEL_DIR / f"{prefix}_latest.joblib"
+    shutil.copy2(path, latest)
+    log.info("model_deployed", market=market, version=model.version,
+             log_loss=metrics["log_loss"], accuracy=metrics["accuracy"], path=str(latest))
     return str(path)
 
 
@@ -299,10 +360,36 @@ async def maybe_auto_retrain(session: AsyncSession) -> bool:
     new_model, metrics = _train_with_params(X, y, best_params)
 
     current_loss = float(state.get("current_log_loss", 9999))
-    improved = metrics["log_loss"] < current_loss
+    new_loss = metrics["log_loss"]
+    new_acc = metrics["accuracy"]
+    current_features_hash = state.get("features_hash")
+    new_features_hash = hashlib.md5(str(MatchFeatures.feature_names()).encode()).hexdigest()[:16]
+    schema_changed = (current_features_hash is not None and current_features_hash != new_features_hash)
 
+    # ── Gate de déploiement ──────────────────────────────────────
+    # 1. Bypass complet si le schema des features a changé (nouveau modèle obligatoire)
+    # 2. Sinon : threshold absolus + protection contre régression > 5%
+    fails_threshold = (new_loss > MAX_DEPLOY_LOG_LOSS or new_acc < MIN_DEPLOY_ACCURACY)
+    regression = (not schema_changed and current_loss < 9000
+                  and new_loss > current_loss * (1 + MAX_LOG_LOSS_REGRESSION))
+
+    if fails_threshold or regression:
+        log.warning("auto_retrain_rejected",
+                    new_loss=new_loss, current_loss=current_loss,
+                    new_acc=new_acc, samples=len(X),
+                    fails_threshold=fails_threshold, regression=regression,
+                    schema_changed=schema_changed,
+                    reason="below_min_threshold" if fails_threshold else "log_loss_regression")
+        state["last_trained"] = datetime.now(timezone.utc).isoformat()
+        _save_state(state)
+        return False
+    if schema_changed:
+        log.info("auto_retrain_schema_change_bypass",
+                 old_hash=current_features_hash, new_hash=new_features_hash)
+
+    improved = new_loss < current_loss
     log.info("auto_retrain_result",
-             new_loss=metrics["log_loss"], current_loss=current_loss,
+             new_loss=new_loss, current_loss=current_loss,
              improved=improved, samples=len(X))
 
     artifact_path = _deploy(new_model, metrics)
@@ -310,10 +397,288 @@ async def maybe_auto_retrain(session: AsyncSession) -> bool:
 
     state.update({
         "last_trained": datetime.now(timezone.utc).isoformat(),
-        "current_log_loss": metrics["log_loss"],
-        "current_accuracy": metrics["accuracy"],
+        "current_log_loss": new_loss,
+        "current_accuracy": new_acc,
         "samples_count": len(X),
+        "features_hash": new_features_hash,
     })
     _save_state(state)
 
     return True
+
+
+# ── OU 2.5 auto-retrain ────────────────────────────────────────────────────────
+
+async def maybe_auto_retrain_ou(session: AsyncSession) -> bool:
+    """Retrain OU 2.5 : mêmes features que 1X2, label binaire (total > 2.5)."""
+    state = _load_state(market="ou")
+    last_trained = datetime.fromisoformat(state["last_trained"]).replace(tzinfo=timezone.utc)
+    cooldown = timedelta(hours=RETRAIN_COOLDOWN_HOURS)
+
+    if datetime.now(timezone.utc) - last_trained < cooldown:
+        log.info("auto_retrain_ou_cooldown", hours_remaining=round(
+            (cooldown - (datetime.now(timezone.utc) - last_trained)).seconds / 3600, 1))
+        return False
+
+    since_naive = last_trained.replace(tzinfo=None)
+    result = await session.execute(text("""
+        SELECT COUNT(*) FROM matches
+        WHERE status = 'FINISHED'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+          AND match_date > :since
+    """), {"since": since_naive})
+    new_samples = result.scalar() or 0
+
+    if new_samples < RETRAIN_MIN_SAMPLES:
+        log.info("auto_retrain_ou_skip", new_samples=new_samples, threshold=RETRAIN_MIN_SAMPLES)
+        return False
+
+    log.info("auto_retrain_ou_start", new_samples=new_samples)
+    result = await session.execute(text("""
+        SELECT home_team, away_team, home_score, away_score, match_date, league,
+               ht_home_score, ht_away_score,
+               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+        FROM matches
+        WHERE status = 'FINISHED'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+        ORDER BY match_date
+    """))
+    rows = result.fetchall()
+    if len(rows) < 200:
+        log.warning("auto_retrain_ou_insufficient_total", count=len(rows))
+        return False
+
+    X, y = _build_dataset(rows, label_func=_label_ou_25)
+    if len(X) < 100:
+        log.warning("auto_retrain_ou_insufficient_features", count=len(X))
+        return False
+
+    best_params = state.get("best_optuna_params")
+    new_model, metrics = _train_with_params(X, y, best_params, multi=False)
+    current_loss = float(state.get("current_log_loss", 9999))
+    new_loss = metrics["log_loss"]
+    new_acc = metrics["accuracy"]
+    current_features_hash = state.get("features_hash")
+    new_features_hash = hashlib.md5(str(MatchFeatures.feature_names()).encode()).hexdigest()[:16]
+    schema_changed = (current_features_hash is not None and current_features_hash != new_features_hash)
+
+    fails_threshold = (new_loss > 0.72 or new_acc < 0.50)
+    regression = (not schema_changed and current_loss < 9000
+                  and new_loss > current_loss * (1 + MAX_LOG_LOSS_REGRESSION))
+    if fails_threshold or regression:
+        log.warning("auto_retrain_ou_rejected",
+                    new_loss=new_loss, current_loss=current_loss, new_acc=new_acc,
+                    fails_threshold=fails_threshold, regression=regression,
+                    schema_changed=schema_changed)
+        state["last_trained"] = datetime.now(timezone.utc).isoformat()
+        _save_state(state, market="ou")
+        return False
+
+    log.info("auto_retrain_ou_result", new_loss=new_loss, current_loss=current_loss,
+             improved=new_loss < current_loss, samples=len(X),
+             schema_changed=schema_changed)
+    _deploy(new_model, metrics, suffix="ou", market="OU_2_5")
+    state.update({
+        "last_trained": datetime.now(timezone.utc).isoformat(),
+        "current_log_loss": new_loss,
+        "current_accuracy": new_acc,
+        "samples_count": len(X),
+        "features_hash": new_features_hash,
+    })
+    _save_state(state, market="ou")
+    return True
+
+
+# ── AH auto-retrain ────────────────────────────────────────────────────────────
+
+async def maybe_auto_retrain_ah(session: AsyncSession) -> bool:
+    """Retrain AH : fetch fdco lines + merge avec features DB + train binary.
+
+    Coût : ~30s pour fetch fdco (6 saisons × 5 ligues = ~30 CSVs), tolérable
+    en daily cycle. Cooldown identique aux autres marchés.
+    """
+    state = _load_state(market="ah")
+    last_trained = datetime.fromisoformat(state["last_trained"]).replace(tzinfo=timezone.utc)
+    cooldown = timedelta(hours=RETRAIN_COOLDOWN_HOURS)
+
+    if datetime.now(timezone.utc) - last_trained < cooldown:
+        log.info("auto_retrain_ah_cooldown", hours_remaining=round(
+            (cooldown - (datetime.now(timezone.utc) - last_trained)).seconds / 3600, 1))
+        return False
+
+    since_naive = last_trained.replace(tzinfo=None)
+    result = await session.execute(text("""
+        SELECT COUNT(*) FROM matches
+        WHERE status = 'FINISHED'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+          AND match_date > :since
+    """), {"since": since_naive})
+    new_samples = result.scalar() or 0
+
+    if new_samples < RETRAIN_MIN_SAMPLES:
+        log.info("auto_retrain_ah_skip", new_samples=new_samples, threshold=RETRAIN_MIN_SAMPLES)
+        return False
+
+    log.info("auto_retrain_ah_start", new_samples=new_samples)
+
+    # 1. Fetch AH lines depuis fdco (réutilise la logique d'ah_pipeline.py)
+    try:
+        # Import lazy : ah_pipeline.py est en racine ml/, pas dans pipeline/
+        import sys, importlib
+        ml_root = Path(__file__).parent.parent
+        if str(ml_root) not in sys.path:
+            sys.path.insert(0, str(ml_root))
+        ah_pipeline = importlib.import_module("ah_pipeline")
+        ah_df = ah_pipeline.fetch_all_ah()
+    except Exception as e:
+        log.error("auto_retrain_ah_fetch_failed", error=str(e))
+        return False
+
+    if ah_df is None or ah_df.empty:
+        log.warning("auto_retrain_ah_no_data")
+        return False
+
+    # 2. Build features depuis DB (mêmes features que 1X2)
+    result = await session.execute(text("""
+        SELECT home_team, away_team, home_score, away_score, match_date, league,
+               ht_home_score, ht_away_score,
+               COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
+        FROM matches
+        WHERE status = 'FINISHED'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+        ORDER BY match_date
+    """))
+    rows = result.fetchall()
+    if len(rows) < 200:
+        log.warning("auto_retrain_ah_insufficient_total", count=len(rows))
+        return False
+
+    # On rebuild un DataFrame avec features ET keys (date, home_team, away_team)
+    df = pd.DataFrame(rows, columns=[
+        "home_team", "away_team", "home_score", "away_score", "date",
+        "league", "ht_home_score", "ht_away_score",
+        "home_yellow_cards", "away_yellow_cards",
+    ])
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["home_score", "away_score"])
+    df["home_score"] = df["home_score"].astype(int)
+    df["away_score"] = df["away_score"].astype(int)
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # ELO state chronologique
+    elo_general = init_elo()
+    elo_home_venue = init_elo()
+    elo_away_venue = init_elo()
+    feat_records = []  # liste de dict avec features + date + teams (pour merge AH)
+    for i, row in df.iterrows():
+        past = df.iloc[:i]
+        if len(past) < 3:
+            update_elo(elo_general, row["home_team"], row["away_team"],
+                       int(row["home_score"]), int(row["away_score"]))
+            update_elo_venue(elo_home_venue, elo_away_venue,
+                             row["home_team"], row["away_team"],
+                             int(row["home_score"]), int(row["away_score"]))
+            continue
+        standings, total_teams = compute_standings_from_history(past, row["date"], row["league"])
+        feat = compute_features_from_history(
+            home_team=row["home_team"], away_team=row["away_team"],
+            match_date=row["date"], historical_df=past,
+            standings=standings, total_teams=total_teams,
+            elo_general=elo_general,
+            elo_home_venue=elo_home_venue,
+            elo_away_venue=elo_away_venue,
+        )
+        d = {name: val for name, val in zip(FEATURE_COLS, feat.to_array())}
+        d["match_date_dt"] = row["date"]
+        d["home_team"] = row["home_team"]
+        d["away_team"] = row["away_team"]
+        feat_records.append(d)
+        update_elo(elo_general, row["home_team"], row["away_team"],
+                   int(row["home_score"]), int(row["away_score"]))
+        update_elo_venue(elo_home_venue, elo_away_venue,
+                         row["home_team"], row["away_team"],
+                         int(row["home_score"]), int(row["away_score"]))
+
+    feat_df = pd.DataFrame(feat_records)
+    if feat_df.empty:
+        log.warning("auto_retrain_ah_no_features")
+        return False
+
+    # 3. Merge features avec AH lines + outcome
+    ah_df = ah_df.copy()
+    ah_df["match_date"] = pd.to_datetime(ah_df["match_date"])
+    ah_df["match_date_dt"] = ah_df["match_date"]
+    merged = ah_df.merge(
+        feat_df, on=["match_date_dt", "home_team", "away_team"], how="inner",
+    )
+    if len(merged) < 200:
+        log.warning("auto_retrain_ah_insufficient_merged", count=len(merged))
+        return False
+    # Compute label
+    merged["home_pnl"] = merged.apply(
+        lambda r: ah_pipeline.compute_ah_outcome(int(r["home_score"]), int(r["away_score"]), float(r["ah_line"]))[0],
+        axis=1,
+    )
+    merged["label"] = (merged["home_pnl"] > 0).astype(int)
+    merged = merged.sort_values("match_date").reset_index(drop=True)
+
+    X = merged[FEATURE_COLS].values.astype(np.float32)
+    y = merged["label"].values.astype(int)
+
+    best_params = state.get("best_optuna_params")
+    new_model, metrics = _train_with_params(X, y, best_params, multi=False)
+    current_loss = float(state.get("current_log_loss", 9999))
+    new_loss = metrics["log_loss"]
+    new_acc = metrics["accuracy"]
+    current_features_hash = state.get("features_hash")
+    new_features_hash = hashlib.md5(str(MatchFeatures.feature_names()).encode()).hexdigest()[:16]
+    schema_changed = (current_features_hash is not None and current_features_hash != new_features_hash)
+
+    fails_threshold = (new_loss > 0.72 or new_acc < 0.48)
+    regression = (not schema_changed and current_loss < 9000
+                  and new_loss > current_loss * (1 + MAX_LOG_LOSS_REGRESSION))
+    if fails_threshold or regression:
+        log.warning("auto_retrain_ah_rejected",
+                    new_loss=new_loss, current_loss=current_loss, new_acc=new_acc,
+                    fails_threshold=fails_threshold, regression=regression,
+                    schema_changed=schema_changed)
+        state["last_trained"] = datetime.now(timezone.utc).isoformat()
+        _save_state(state, market="ah")
+        return False
+
+    log.info("auto_retrain_ah_result", new_loss=new_loss, current_loss=current_loss,
+             improved=new_loss < current_loss, samples=len(X),
+             schema_changed=schema_changed)
+    _deploy(new_model, metrics, suffix="ah", market="AH")
+    state.update({
+        "last_trained": datetime.now(timezone.utc).isoformat(),
+        "current_log_loss": new_loss,
+        "current_accuracy": new_acc,
+        "samples_count": len(X),
+        "features_hash": new_features_hash,
+    })
+    _save_state(state, market="ah")
+    return True
+
+
+# ── Orchestrateur 3 marchés ────────────────────────────────────────────────────
+
+async def maybe_auto_retrain_all(session: AsyncSession) -> dict:
+    """Orchestrate les 3 retrains. Retourne {market: bool deployed}."""
+    results = {}
+    try:
+        results["1x2"] = await maybe_auto_retrain(session)
+    except Exception as e:
+        log.error("auto_retrain_1x2_error", error=str(e))
+        results["1x2"] = False
+    try:
+        results["ou"] = await maybe_auto_retrain_ou(session)
+    except Exception as e:
+        log.error("auto_retrain_ou_error", error=str(e))
+        results["ou"] = False
+    try:
+        results["ah"] = await maybe_auto_retrain_ah(session)
+    except Exception as e:
+        log.error("auto_retrain_ah_error", error=str(e))
+        results["ah"] = False
+    return results

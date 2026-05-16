@@ -90,17 +90,56 @@ def merge_with_features(features_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd.
     return merged
 
 
-def compute_oof_ou(X, y):
+def tune_optuna_ou(X, y, n_trials=100):
+    import optuna
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import log_loss
+    from xgboost import XGBClassifier
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        p = {
+            "n_estimators": trial.suggest_int("n_estimators", 200, 700),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "gamma": trial.suggest_float("gamma", 0.0, 0.5),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 2.0),
+            "objective": "binary:logistic", "eval_metric": "logloss",
+            "random_state": 42, "n_jobs": -1,
+        }
+        tscv = TimeSeriesSplit(n_splits=5)
+        losses = []
+        for ti, vi in tscv.split(X):
+            clf = CalibratedClassifierCV(XGBClassifier(**p), method="sigmoid", cv=3)
+            clf.fit(X[ti], y[ti])
+            losses.append(log_loss(y[vi], clf.predict_proba(X[vi])))
+        return float(np.mean(losses))
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    print(f"  Best CV log-loss : {study.best_value:.4f}")
+    return {**study.best_params,
+            "objective": "binary:logistic", "eval_metric": "logloss",
+            "random_state": 42, "n_jobs": -1}
+
+
+def compute_oof_ou(X, y, params=None):
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.calibration import CalibratedClassifierCV
     from xgboost import XGBClassifier
 
-    params = {
-        "n_estimators": 300, "max_depth": 5, "learning_rate": 0.05,
-        "subsample": 0.8, "colsample_bytree": 0.8,
-        "objective": "binary:logistic", "eval_metric": "logloss",
-        "random_state": 42, "n_jobs": -1,
-    }
+    if params is None:
+        params = {
+            "n_estimators": 300, "max_depth": 5, "learning_rate": 0.05,
+            "subsample": 0.8, "colsample_bytree": 0.8,
+            "objective": "binary:logistic", "eval_metric": "logloss",
+            "random_state": 42, "n_jobs": -1,
+        }
     oof = np.zeros((len(y), 2))
     tscv = TimeSeriesSplit(n_splits=5)
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
@@ -249,7 +288,8 @@ def publish_to_redis(summary, bets_df):
         print(f"⚠ Redis échoué : {e}")
 
 
-def run_backtest(initial_bankroll=100.0, edge_threshold=0.03, edge_max=0.20, kelly_fraction=0.25):
+def run_backtest(initial_bankroll=100.0, edge_threshold=0.03, edge_max=0.20, kelly_fraction=0.25,
+                 tune=False, n_trials=100):
     print("─" * 60)
     print("Backtest O/U 2.5 buts — value betting Kelly")
     print("─" * 60)
@@ -280,7 +320,17 @@ def run_backtest(initial_bankroll=100.0, edge_threshold=0.03, edge_max=0.20, kel
     merged = merged.sort_values("match_date").reset_index(drop=True)
     X = merged[feature_cols].values.astype(np.float32)
     y = merged["label"].values.astype(int)  # 1 = Over
-    oof = compute_oof_ou(X, y)
+
+    best_params = None
+    if tune:
+        print(f"  Optuna tuning ({n_trials} trials)...")
+        best_params = tune_optuna_ou(X, y, n_trials=n_trials)
+        out = DATA_DIR.parent / "artifacts" / "models" / "best_params_ou.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(best_params, indent=2))
+        print(f"  Best params saved to {out}")
+
+    oof = compute_oof_ou(X, y, params=best_params)
     merged["prob_under"] = oof[:, 0]
     merged["prob_over"] = oof[:, 1]
     valid = oof.sum(axis=1) > 0
@@ -323,5 +373,8 @@ if __name__ == "__main__":
     parser.add_argument("--edge-threshold", type=float, default=0.03)
     parser.add_argument("--edge-max", type=float, default=0.20)
     parser.add_argument("--kelly-fraction", type=float, default=0.25)
+    parser.add_argument("--tune", action="store_true")
+    parser.add_argument("--n-trials", type=int, default=100)
     args = parser.parse_args()
-    run_backtest(args.bankroll, args.edge_threshold, args.edge_max, args.kelly_fraction)
+    run_backtest(args.bankroll, args.edge_threshold, args.edge_max, args.kelly_fraction,
+                 tune=args.tune, n_trials=args.n_trials)

@@ -1,11 +1,21 @@
 """
 Feature engineering pour le modèle XGBoost edgeAI.
-36 features réelles : forme récente, venue-specific, contexte, H2H, standings, cartons, mi-temps.
+50 features réelles : forme récente, venue-specific, contexte, H2H, standings, cartons, mi-temps,
+ELO ratings (général + venue), Pythagorean expectation, streaks, BTTS, forme ELO-pondérée.
 Toutes calculables depuis football-data.org — aucune feature morte.
+
+ELO :
+- ELO général : 1 dict {team: rating}, K=20, initial 1500, home-advantage 65pts en update
+- ELO venue : 2 dicts séparés home/away pour modéliser dynamique différente
+- Forme ELO-pondérée : surperformance vs expected_points calculé depuis adversaires
 """
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
+
+ELO_K = 20.0
+ELO_HOME_ADV = 65.0  # ~0.4 goal advantage en moyenne sur big-5
+ELO_INIT = 1500.0
 
 
 @dataclass
@@ -66,6 +76,38 @@ class MatchFeatures:
     home_clean_sheet_rate: float = 0.0
     away_clean_sheet_rate: float = 0.0
 
+    # ─── Phase 1 features ──────────────────────────────────────
+    # ELO ratings (général) — calculés chronologiquement
+    home_elo: float = 1500.0
+    away_elo: float = 1500.0
+    elo_diff: float = 0.0  # home - away (positif = home favori)
+
+    # ELO venue-specific (séparé domicile vs extérieur)
+    home_elo_home: float = 1500.0  # rating de home_team quand elle joue à domicile
+    away_elo_away: float = 1500.0  # rating de away_team quand elle joue à l'extérieur
+    elo_venue_diff: float = 0.0
+
+    # Pythagorean win expectation (sur 10 derniers matchs)
+    # Pyth = GF^1.83 / (GF^1.83 + GA^1.83), formule Morey/Hollinger adaptée
+    home_pythag: float = 0.5
+    away_pythag: float = 0.5
+
+    # Streaks (W/L/D consécutifs sur les 10 derniers matchs)
+    home_unbeaten_streak: float = 0.0
+    home_losing_streak: float = 0.0
+    away_unbeaten_streak: float = 0.0
+    away_losing_streak: float = 0.0
+
+    # Forme ELO-pondérée (strength of schedule)
+    # = points réels - points attendus selon ELO des adversaires
+    # Positif = surperforme, négatif = sousperforme
+    home_form_vs_expected: float = 0.0
+    away_form_vs_expected: float = 0.0
+
+    # Both Teams To Score rate (sur 10 derniers matchs)
+    home_btts_rate: float = 0.5
+    away_btts_rate: float = 0.5
+
     def to_array(self) -> np.ndarray:
         return np.array(
             [getattr(self, f) for f in self.__dataclass_fields__],
@@ -86,6 +128,9 @@ def compute_features_from_history(
     standings: dict[str, int] | None = None,
     total_teams: int = 20,
     window: int = 5,
+    elo_general: dict[str, float] | None = None,
+    elo_home_venue: dict[str, float] | None = None,
+    elo_away_venue: dict[str, float] | None = None,
 ) -> MatchFeatures:
     """
     Calcule les features à partir de l'historique des matchs.
@@ -222,6 +267,19 @@ def compute_features_from_history(
             )
             feat.away_yellow_cards_avg = float(away_yellows.mean())
 
+    # --- Phase 1 : ELO + advanced features ---
+    if elo_general is not None:
+        compute_elo_features(
+            feat, home_team, away_team,
+            elo_general,
+            elo_home_venue if elo_home_venue is not None else {},
+            elo_away_venue if elo_away_venue is not None else {},
+        )
+        compute_advanced_features(
+            feat, home_team, away_team, match_date,
+            historical_df, elo_general, window=10,
+        )
+
     return feat
 
 
@@ -294,6 +352,242 @@ def _clean_sheet_rate(hist: pd.DataFrame, team: str) -> float:
     )
     return clean_sheets / len(hist)
 
+
+# ──────────────────────────────────────────────────────────
+# Phase 1 : ELO ratings + advanced features
+# ──────────────────────────────────────────────────────────
+
+def init_elo() -> dict[str, float]:
+    """État ELO initial (vide). Sera peuplé chronologiquement par le builder."""
+    return {}
+
+
+def elo_expected(r_a: float, r_b: float) -> float:
+    """Probabilité que A batte B selon ELO."""
+    return 1.0 / (1.0 + 10 ** ((r_b - r_a) / 400.0))
+
+
+def update_elo(
+    elo: dict[str, float],
+    home_team: str,
+    away_team: str,
+    home_score: int,
+    away_score: int,
+    K: float = ELO_K,
+    home_adv: float = ELO_HOME_ADV,
+) -> None:
+    """
+    Update ELO général après un match. Home advantage intégré dans expected.
+
+    Score réel : 1 = home_win, 0.5 = draw, 0 = away_win
+    Bonus victoire large (>= 2 buts d'écart) : multiplicateur K (1.5x si écart 2, 1.75x si 3+)
+    """
+    r_h = elo.get(home_team, ELO_INIT)
+    r_a = elo.get(away_team, ELO_INIT)
+    # Home advantage : on traite r_h comme si c'était r_h + home_adv pour le calcul de l'expected
+    exp_h = elo_expected(r_h + home_adv, r_a)
+    if home_score > away_score:
+        score_h = 1.0
+    elif home_score < away_score:
+        score_h = 0.0
+    else:
+        score_h = 0.5
+
+    # Goal margin multiplier (résultat plus convaincant si large)
+    margin = abs(home_score - away_score)
+    if margin >= 3:
+        k_mult = 1.75
+    elif margin == 2:
+        k_mult = 1.5
+    else:
+        k_mult = 1.0
+    k = K * k_mult
+
+    elo[home_team] = r_h + k * (score_h - exp_h)
+    elo[away_team] = r_a + k * ((1 - score_h) - (1 - exp_h))
+
+
+def update_elo_venue(
+    elo_home: dict[str, float],
+    elo_away: dict[str, float],
+    home_team: str,
+    away_team: str,
+    home_score: int,
+    away_score: int,
+    K: float = ELO_K,
+) -> None:
+    """
+    Update ELO venue-specific (2 dicts séparés). Pas de home advantage car déjà venue-segmenté.
+    """
+    r_h = elo_home.get(home_team, ELO_INIT)
+    r_a = elo_away.get(away_team, ELO_INIT)
+    exp_h = elo_expected(r_h, r_a)
+    if home_score > away_score:
+        score_h = 1.0
+    elif home_score < away_score:
+        score_h = 0.0
+    else:
+        score_h = 0.5
+
+    margin = abs(home_score - away_score)
+    if margin >= 3:
+        k_mult = 1.75
+    elif margin == 2:
+        k_mult = 1.5
+    else:
+        k_mult = 1.0
+    k = K * k_mult
+
+    elo_home[home_team] = r_h + k * (score_h - exp_h)
+    elo_away[away_team] = r_a + k * ((1 - score_h) - (1 - exp_h))
+
+
+def _pythagorean(goals_for: float, goals_against: float, exponent: float = 1.83) -> float:
+    """Pythagorean win expectation (Morey/Hollinger adapted for football, exponent 1.83)."""
+    if goals_for <= 0 and goals_against <= 0:
+        return 0.5
+    a = goals_for ** exponent
+    b = goals_against ** exponent
+    return float(a / (a + b)) if (a + b) > 0 else 0.5
+
+
+def _streaks(hist: pd.DataFrame, team: str) -> tuple[float, float]:
+    """
+    Renvoie (unbeaten_streak, losing_streak) en partant du match le plus récent.
+    Unbeaten = W ou D consécutifs ; losing = L consécutifs.
+    """
+    if len(hist) == 0:
+        return 0.0, 0.0
+    unb = 0
+    lose = 0
+    # iter chronologiquement inversé (plus récent en premier)
+    for _, row in hist.iloc[::-1].iterrows():
+        if row["home_team"] == team:
+            won = row["home_score"] > row["away_score"]
+            drew = row["home_score"] == row["away_score"]
+        else:
+            won = row["away_score"] > row["home_score"]
+            drew = row["home_score"] == row["away_score"]
+
+        if unb == 0 and lose == 0:
+            # premier match qu'on regarde : initialise la streak active
+            if won or drew:
+                unb = 1
+            else:
+                lose = 1
+            continue
+        # continue la streak active si même type
+        if unb > 0:
+            if won or drew:
+                unb += 1
+            else:
+                break
+        elif lose > 0:
+            if not won and not drew:
+                lose += 1
+            else:
+                break
+    return float(unb), float(lose)
+
+
+def _btts_rate(hist: pd.DataFrame) -> float:
+    """% matchs où les 2 équipes ont marqué."""
+    if len(hist) == 0:
+        return 0.5
+    btts = ((hist["home_score"] >= 1) & (hist["away_score"] >= 1)).sum()
+    return float(btts / len(hist))
+
+
+def _form_vs_expected(
+    hist: pd.DataFrame, team: str, elo_general: dict[str, float],
+) -> float:
+    """
+    Calcule (points réels - points attendus) sur les `hist` matchs en fonction
+    de l'ELO de l'adversaire AVANT ce match (snapshot à match_date).
+
+    Comme on n'a pas l'ELO historique exact, on approxime avec l'ELO actuel
+    (best-effort). Acceptable car la corrélation reste valide.
+    """
+    if len(hist) == 0:
+        return 0.0
+    team_elo = elo_general.get(team, ELO_INIT)
+    total = 0.0
+    for _, row in hist.iterrows():
+        if row["home_team"] == team:
+            opp = row["away_team"]
+            won = row["home_score"] > row["away_score"]
+            drew = row["home_score"] == row["away_score"]
+            home_for_team = True
+        else:
+            opp = row["home_team"]
+            won = row["away_score"] > row["home_score"]
+            drew = row["home_score"] == row["away_score"]
+            home_for_team = False
+
+        opp_elo = elo_general.get(opp, ELO_INIT)
+        # Expected points selon ELO (1 pour W, 0.5 pour D, 0 pour L → multiplié par 3 pour points)
+        # On approx prob_win seul (drawn rare in pure 2-outcome ELO, simplification)
+        if home_for_team:
+            exp_p = elo_expected(team_elo + ELO_HOME_ADV, opp_elo) * 3
+        else:
+            exp_p = elo_expected(team_elo, opp_elo + ELO_HOME_ADV) * 3
+
+        actual_p = 3 if won else (1 if drew else 0)
+        total += actual_p - exp_p
+    return float(total / len(hist))
+
+
+def compute_elo_features(
+    feat: MatchFeatures,
+    home_team: str, away_team: str,
+    elo_general: dict[str, float],
+    elo_home_venue: dict[str, float],
+    elo_away_venue: dict[str, float],
+) -> None:
+    """Remplit les champs ELO du feat in-place."""
+    feat.home_elo = elo_general.get(home_team, ELO_INIT)
+    feat.away_elo = elo_general.get(away_team, ELO_INIT)
+    feat.elo_diff = feat.home_elo - feat.away_elo
+
+    feat.home_elo_home = elo_home_venue.get(home_team, ELO_INIT)
+    feat.away_elo_away = elo_away_venue.get(away_team, ELO_INIT)
+    feat.elo_venue_diff = feat.home_elo_home - feat.away_elo_away
+
+
+def compute_advanced_features(
+    feat: MatchFeatures,
+    home_team: str, away_team: str,
+    match_date: pd.Timestamp,
+    historical_df: pd.DataFrame,
+    elo_general: dict[str, float],
+    window: int = 10,
+) -> None:
+    """Remplit Pythagorean + streaks + ELO-weighted form + BTTS in-place."""
+    home_hist = _get_team_history(historical_df, home_team, match_date, window)
+    away_hist = _get_team_history(historical_df, away_team, match_date, window)
+
+    if len(home_hist) > 0:
+        gf = sum(r["home_score"] if r["home_team"] == home_team else r["away_score"]
+                 for _, r in home_hist.iterrows())
+        ga = sum(r["away_score"] if r["home_team"] == home_team else r["home_score"]
+                 for _, r in home_hist.iterrows())
+        feat.home_pythag = _pythagorean(gf, ga)
+        feat.home_unbeaten_streak, feat.home_losing_streak = _streaks(home_hist, home_team)
+        feat.home_form_vs_expected = _form_vs_expected(home_hist, home_team, elo_general)
+        feat.home_btts_rate = _btts_rate(home_hist)
+
+    if len(away_hist) > 0:
+        gf = sum(r["home_score"] if r["home_team"] == away_team else r["away_score"]
+                 for _, r in away_hist.iterrows())
+        ga = sum(r["away_score"] if r["home_team"] == away_team else r["home_score"]
+                 for _, r in away_hist.iterrows())
+        feat.away_pythag = _pythagorean(gf, ga)
+        feat.away_unbeaten_streak, feat.away_losing_streak = _streaks(away_hist, away_team)
+        feat.away_form_vs_expected = _form_vs_expected(away_hist, away_team, elo_general)
+        feat.away_btts_rate = _btts_rate(away_hist)
+
+
+# ──────────────────────────────────────────────────────────
 
 def compute_standings_from_history(
     df: pd.DataFrame,

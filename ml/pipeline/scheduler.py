@@ -23,10 +23,11 @@ from .nba_ingestion import NBAOddsClient, normalize_nba_upcoming, normalize_nba_
 from .nba_features import compute_nba_features, NBAFeatures
 from .nba_model import EdgeAIModelNBA
 from .features import compute_features_from_history, MatchFeatures
+from .football_inference import FOOT_STATE
 from .model import EdgeAIModel
 from .settle import settle_finished_bets
 from .drift import check_drift_and_rollback
-from .trainer import maybe_auto_retrain
+from .trainer import maybe_auto_retrain_all
 from .notifications import notify_new_value_bets
 import joblib
 
@@ -466,8 +467,9 @@ async def run_pipeline():
             drift_report = await check_drift_and_rollback(session)
             log.info("drift_check", **{k: v for k, v in drift_report.items() if v is not None})
 
-            # Réentraînement automatique quotidien
-            await maybe_auto_retrain(session)
+            # Réentraînement automatique quotidien (1X2 + OU + AH, gates inclus)
+            retrain_results = await maybe_auto_retrain_all(session)
+            log.info("auto_retrain_cycle_done", **retrain_results)
 
             await session.commit()
 
@@ -743,6 +745,47 @@ async def _upsert_odds_from_prediction(session: AsyncSession, match_id: str, pre
         log.error("upsert_odds_error", match_id=match_id, error=str(e))
 
 
+async def _build_foot_features(
+    match_data: dict,
+    session: AsyncSession,
+    standings: dict | None = None,
+    total_teams: int = 20,
+) -> MatchFeatures:
+    """Build MatchFeatures (52 fields, Phase 1) using global FOOT_STATE.
+
+    Charge l'état ELO global si périmé, puis calcule les features. Fallback :
+    si FOOT_STATE est inutilisable, retourne MatchFeatures() avec defaults.
+    """
+    import pandas as pd
+
+    home_team = match_data.get("home_team", "")
+    away_team = match_data.get("away_team", "")
+    match_date_raw = match_data.get("match_date", "")
+    league = match_data.get("league", "")
+
+    try:
+        if isinstance(match_date_raw, str):
+            match_date = pd.Timestamp(match_date_raw.replace("Z", "+00:00")).tz_localize(None)
+        else:
+            match_date = pd.Timestamp(match_date_raw)
+    except Exception:
+        return MatchFeatures()
+
+    ok = await FOOT_STATE.ensure_loaded(session)
+    if not ok or FOOT_STATE.historical_df is None:
+        # Fallback : pas de FOOT_STATE → features par défaut (ELO=1500)
+        return MatchFeatures()
+
+    # Si standings non fournis, FOOT_STATE.compute_features_sync les calculera
+    # depuis son historical_df interne (sans data leakage, < match_date)
+    if standings is not None:
+        # Override standings dans la fct sync nécessite paramétrage. Pour rester
+        # simple, on délègue à FOOT_STATE.compute_features_sync qui recalcule.
+        pass
+
+    return FOOT_STATE.compute_features_sync(home_team, away_team, match_date, league)
+
+
 async def _generate_prediction(
     model: EdgeAIModel,
     match_data: dict,
@@ -750,51 +793,7 @@ async def _generate_prediction(
     standings: dict | None = None,
     total_teams: int = 20,
 ) -> dict:
-    import pandas as pd
-
-    home_team = match_data.get("home_team", "")
-    away_team = match_data.get("away_team", "")
-    match_date_raw = match_data.get("match_date", "")
-
-    try:
-        if isinstance(match_date_raw, str):
-            match_date = pd.Timestamp(match_date_raw.replace("Z", "+00:00")).tz_localize(None)
-        else:
-            match_date = pd.Timestamp(match_date_raw)
-
-        result = await session.execute(
-            text("""
-                SELECT home_team, away_team, home_score, away_score, match_date, league,
-                       ht_home_score, ht_away_score,
-                       COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
-                FROM matches
-                WHERE status = 'FINISHED'
-                  AND (home_team = :home OR away_team = :home
-                       OR home_team = :away OR away_team = :away)
-                ORDER BY match_date DESC
-                LIMIT 40
-            """),
-            {"home": home_team, "away": away_team},
-        )
-        rows = result.fetchall()
-    except Exception:
-        rows = []
-
-    if len(rows) >= 3:
-        df = pd.DataFrame(rows, columns=[
-            "home_team", "away_team", "home_score", "away_score", "date", "league",
-            "ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards",
-        ])
-        df["date"] = pd.to_datetime(df["date"])
-        df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce").fillna(0)
-        df["away_score"] = pd.to_numeric(df["away_score"], errors="coerce").fillna(0)
-        features = compute_features_from_history(
-            home_team, away_team, match_date, df,
-            standings=standings, total_teams=total_teams,
-        )
-    else:
-        features = MatchFeatures()
-
+    features = await _build_foot_features(match_data, session, standings, total_teams)
     return model.predict(features)
 
 
@@ -839,50 +838,11 @@ async def _generate_ou_prediction(
     standings: dict | None = None,
     total_teams: int = 20,
 ) -> dict | None:
-    """Génère les probas O/U pour un match foot."""
-    import pandas as pd
+    """Génère les probas O/U pour un match foot. Utilise FOOT_STATE (52 features)."""
     cal = ou_bundle.get("model")
     if cal is None:
         return None
-
-    home_team = match_data.get("home_team", "")
-    away_team = match_data.get("away_team", "")
-    match_date_raw = match_data.get("match_date", "")
-    try:
-        if isinstance(match_date_raw, str):
-            match_date = pd.Timestamp(match_date_raw.replace("Z", "+00:00")).tz_localize(None)
-        else:
-            match_date = pd.Timestamp(match_date_raw)
-
-        result = await session.execute(text("""
-            SELECT home_team, away_team, home_score, away_score, match_date, league,
-                   ht_home_score, ht_away_score,
-                   COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
-            FROM matches
-            WHERE status = 'FINISHED' AND sport = 'FOOTBALL'
-              AND (home_team = :home OR away_team = :home
-                   OR home_team = :away OR away_team = :away)
-            ORDER BY match_date DESC LIMIT 40
-        """), {"home": home_team, "away": away_team})
-        rows = result.fetchall()
-    except Exception:
-        rows = []
-
-    if len(rows) >= 3:
-        df = pd.DataFrame(rows, columns=[
-            "home_team", "away_team", "home_score", "away_score", "date", "league",
-            "ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards",
-        ])
-        df["date"] = pd.to_datetime(df["date"])
-        df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce").fillna(0)
-        df["away_score"] = pd.to_numeric(df["away_score"], errors="coerce").fillna(0)
-        features = compute_features_from_history(
-            home_team, away_team, match_date, df,
-            standings=standings, total_teams=total_teams,
-        )
-    else:
-        features = MatchFeatures()
-
+    features = await _build_foot_features(match_data, session, standings, total_teams)
     X = features.to_array().reshape(1, -1)
     try:
         proba = cal.predict_proba(X)[0]
@@ -904,49 +864,10 @@ async def _generate_ah_prediction(
     total_teams: int = 20,
 ) -> dict | None:
     """Génère les probas Asian Handicap (P(home covers) / P(away covers))."""
-    import pandas as pd
     cal = ah_bundle.get("model")
     if cal is None:
         return None
-
-    home_team = match_data.get("home_team", "")
-    away_team = match_data.get("away_team", "")
-    match_date_raw = match_data.get("match_date", "")
-    try:
-        if isinstance(match_date_raw, str):
-            match_date = pd.Timestamp(match_date_raw.replace("Z", "+00:00")).tz_localize(None)
-        else:
-            match_date = pd.Timestamp(match_date_raw)
-
-        result = await session.execute(text("""
-            SELECT home_team, away_team, home_score, away_score, match_date, league,
-                   ht_home_score, ht_away_score,
-                   COALESCE(home_yellow_cards, 0), COALESCE(away_yellow_cards, 0)
-            FROM matches
-            WHERE status = 'FINISHED' AND sport = 'FOOTBALL'
-              AND (home_team = :home OR away_team = :home
-                   OR home_team = :away OR away_team = :away)
-            ORDER BY match_date DESC LIMIT 40
-        """), {"home": home_team, "away": away_team})
-        rows = result.fetchall()
-    except Exception:
-        rows = []
-
-    if len(rows) >= 3:
-        df = pd.DataFrame(rows, columns=[
-            "home_team", "away_team", "home_score", "away_score", "date", "league",
-            "ht_home_score", "ht_away_score", "home_yellow_cards", "away_yellow_cards",
-        ])
-        df["date"] = pd.to_datetime(df["date"])
-        df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce").fillna(0)
-        df["away_score"] = pd.to_numeric(df["away_score"], errors="coerce").fillna(0)
-        features = compute_features_from_history(
-            home_team, away_team, match_date, df,
-            standings=standings, total_teams=total_teams,
-        )
-    else:
-        features = MatchFeatures()
-
+    features = await _build_foot_features(match_data, session, standings, total_teams)
     X = features.to_array().reshape(1, -1)
     try:
         proba = cal.predict_proba(X)[0]

@@ -250,7 +250,46 @@ def merge_with_features(features_df: pd.DataFrame, odds_df: pd.DataFrame) -> pd.
     return merged
 
 
-def compute_oof_predictions(X: np.ndarray, y: np.ndarray) -> np.ndarray:
+def tune_optuna(X: np.ndarray, y: np.ndarray, n_trials: int = 100) -> dict:
+    """Optuna tuning sur log-loss multi-class, TimeSeriesSplit 5 folds."""
+    import optuna
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import log_loss
+    from xgboost import XGBClassifier
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        p = {
+            "n_estimators": trial.suggest_int("n_estimators", 200, 700),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "gamma": trial.suggest_float("gamma", 0.0, 0.5),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 2.0),
+            "objective": "multi:softprob", "num_class": 3,
+            "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1,
+        }
+        tscv = TimeSeriesSplit(n_splits=5)
+        losses = []
+        for ti, vi in tscv.split(X):
+            clf = CalibratedClassifierCV(XGBClassifier(**p), method="sigmoid", cv=3)
+            clf.fit(X[ti], y[ti])
+            losses.append(log_loss(y[vi], clf.predict_proba(X[vi])))
+        return float(np.mean(losses))
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    print(f"  Best CV log-loss : {study.best_value:.4f}")
+    return {**study.best_params,
+            "objective": "multi:softprob", "num_class": 3,
+            "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1}
+
+
+def compute_oof_predictions(X: np.ndarray, y: np.ndarray, params: dict | None = None) -> np.ndarray:
     """5-fold TimeSeriesSplit : retourne les probas OOF (les premiers folds restent à 0).
     Calibration sigmoid (Platt) au lieu d'isotonic — plus stable sur les queues de distribution.
     """
@@ -258,12 +297,13 @@ def compute_oof_predictions(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     from sklearn.calibration import CalibratedClassifierCV
     from xgboost import XGBClassifier
 
-    params = {
-        "n_estimators": 300, "max_depth": 5, "learning_rate": 0.05,
-        "subsample": 0.8, "colsample_bytree": 0.8,
-        "objective": "multi:softprob", "num_class": 3,
-        "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1,
-    }
+    if params is None:
+        params = {
+            "n_estimators": 300, "max_depth": 5, "learning_rate": 0.05,
+            "subsample": 0.8, "colsample_bytree": 0.8,
+            "objective": "multi:softprob", "num_class": 3,
+            "eval_metric": "mlogloss", "random_state": 42, "n_jobs": -1,
+        }
     oof = np.zeros((len(y), 3))
     tscv = TimeSeriesSplit(n_splits=5)
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
@@ -434,6 +474,8 @@ def run_backtest(
     edge_max: float = 0.20,
     min_prob: float = 0.0,
     kelly_fraction: float = 0.25,
+    tune: bool = False,
+    n_trials: int = 100,
 ):
     print("─" * 60)
     print("Backtest — value betting Kelly")
@@ -472,7 +514,18 @@ def run_backtest(
     merged = merged.sort_values("match_date").reset_index(drop=True)
     X = merged[feature_cols].values.astype(np.float32)
     y = merged["label"].values.astype(int)
-    oof = compute_oof_predictions(X, y)
+
+    best_params = None
+    if tune:
+        print(f"  Optuna tuning ({n_trials} trials)...")
+        best_params = tune_optuna(X, y, n_trials=n_trials)
+        # Persist for downstream reuse (auto-trainer in scheduler)
+        out = DATA_DIR.parent / "artifacts" / "models" / "best_params_1x2.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(best_params, indent=2))
+        print(f"  Best params saved to {out}")
+
+    oof = compute_oof_predictions(X, y, params=best_params)
     merged["prob_home"] = oof[:, 0]
     merged["prob_draw"] = oof[:, 1]
     merged["prob_away"] = oof[:, 2]
@@ -568,5 +621,8 @@ if __name__ == "__main__":
     parser.add_argument("--min-prob", type=float, default=0.0,
                         help="Skip si la prob du modèle est < ce seuil (filtrer outsiders)")
     parser.add_argument("--kelly-fraction", type=float, default=0.25)
+    parser.add_argument("--tune", action="store_true", help="Lance Optuna tuning avant OOF predictions")
+    parser.add_argument("--n-trials", type=int, default=100)
     args = parser.parse_args()
-    run_backtest(args.bankroll, args.edge_threshold, args.edge_max, args.min_prob, args.kelly_fraction)
+    run_backtest(args.bankroll, args.edge_threshold, args.edge_max, args.min_prob,
+                 args.kelly_fraction, tune=args.tune, n_trials=args.n_trials)
