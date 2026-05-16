@@ -47,18 +47,15 @@ fi
 # Read password back
 PG_PASSWORD=$(grep "^POSTGRES_PASSWORD=" .env | cut -d'=' -f2)
 
-# Update DATABASE_URL
+# Update DATABASE_URL → postgres local (Docker-internal hostname)
+# Les containers backend/ml_worker accèdent à postgres via DNS Docker "postgres:5432"
 echo "==> Update DATABASE_URL → postgres local..."
-NEW_URL="postgresql://edgeai:${PG_PASSWORD}@127.0.0.1:5432/edgeai"
-# Replace existing DATABASE_URL or add it
+DOCKER_INTERNAL_URL="postgresql://edgeai:${PG_PASSWORD}@postgres:5432/edgeai"
 if grep -q "^DATABASE_URL=" .env; then
-    # Comment l'ancienne ligne pour rollback possible
+    # Backup l'ancienne ligne pour rollback possible
     sed -i 's|^DATABASE_URL=|# DATABASE_URL_OLD_PRISMA=|' .env
 fi
-echo "DATABASE_URL=${NEW_URL}" >> .env
-
-# Aussi besoin de la URL Docker-internal pour les containers (postgres:5432 au lieu de 127.0.0.1)
-DOCKER_INTERNAL_URL="postgresql://edgeai:${PG_PASSWORD}@postgres:5432/edgeai"
+echo "DATABASE_URL=${DOCKER_INTERNAL_URL}" >> .env
 
 echo "==> Stop tous les services..."
 $COMPOSE down
@@ -78,17 +75,20 @@ for i in {1..30}; do
     sleep 2
 done
 
-echo "==> Apply Prisma schema (npx prisma db push)..."
-# Override DATABASE_URL pour utiliser 127.0.0.1:5432 depuis l'host
-DATABASE_URL="${NEW_URL}" npx prisma db push --accept-data-loss --skip-generate
+echo "==> Apply Prisma schema (via container node:20-alpine ephémère)..."
+# L'host Hetzner n'a pas Node.js. On lance un container Node ephémère qui :
+#  - mount le repo /opt/edgeai → /app
+#  - rejoint le réseau Docker compose pour accéder à postgres via DNS
+#  - utilise DATABASE_URL Docker-internal "postgres:5432"
+docker run --rm \
+    --network edgeai_default \
+    -v "${REPO_DIR}:/app" \
+    -w /app \
+    -e DATABASE_URL="${DOCKER_INTERNAL_URL}" \
+    node:20-alpine \
+    sh -c "npx -y prisma@6 db push --accept-data-loss --skip-generate"
 
-echo "==> Up backend + ml_worker (mais les containers utilisent postgres:5432 via Docker network)..."
-# IMPORTANT : passer DATABASE_URL avec hostname interne 'postgres'
-# Le compose utilise ${DATABASE_URL} depuis .env mais on l'override pour les containers
-# via un .env.docker temporaire OU on update .env avec hostname interne avant up
-# Solution la plus propre : modifier .env pour utiliser hostname interne et override pour prisma uniquement
-sed -i "s|^DATABASE_URL=postgresql://edgeai:${PG_PASSWORD}@127.0.0.1:5432/edgeai|DATABASE_URL=${DOCKER_INTERNAL_URL}|" .env
-
+echo "==> Up backend + ml_worker..."
 $COMPOSE up -d backend ml_worker
 
 echo "==> Import matches.csv (re-peuple matches FINISHED)..."
