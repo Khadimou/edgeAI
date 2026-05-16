@@ -137,22 +137,23 @@ export default function MatchPage() {
       {/* Prédictions IA */}
       {prediction && (
         <div className="card">
-          <div className="flex items-center gap-2 mb-5">
+          <div className="flex items-center gap-2 mb-3">
             <TrendingUp className="w-4 h-4 text-brand-500" />
             <h2 className="font-semibold">Prédictions IA</h2>
             <span className="text-xs text-gray-500 ml-auto">
               v{prediction.model_version} · confiance {formatPercent(prediction.confidence)}
             </span>
-            <button
-              type="button"
-              onClick={() => setExplainOpen(true)}
-              className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 ml-2"
-              title="Pourquoi le modèle prédit ça ?"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              Expliquer
-            </button>
           </div>
+          {/* Bouton Expliquer — toujours visible, full width sur mobile */}
+          <button
+            type="button"
+            onClick={() => setExplainOpen(true)}
+            className="mb-5 w-full sm:w-auto inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-500/10 border border-brand-500/30 text-sm text-brand-300 hover:bg-brand-500/20 hover:border-brand-500/50 transition"
+            title="Pourquoi le modèle prédit ça ?"
+          >
+            <HelpCircle className="w-4 h-4" />
+            Expliquer la prédiction
+          </button>
           <div className="space-y-3">
             {probBars.map((bar) => (
               <div key={bar.label}>
