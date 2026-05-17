@@ -452,7 +452,8 @@ export default function TrackingPage() {
                     <td className="py-1.5 pr-2 text-gray-400">
                       {b.match_date ? format(new Date(b.match_date), "d MMM", { locale: fr }) : "—"}
                     </td>
-                    <td className="py-1.5 px-2 truncate max-w-[180px]">
+                    <td className="py-1.5 px-2 truncate max-w-[180px]"
+                        title={`${b.home_team} vs ${b.away_team}`}>
                       <span className={cn(b.outcome === "HOME" && "text-brand-300")}>{b.home_team}</span>
                       <span className="text-gray-600 mx-1">vs</span>
                       <span className={cn(b.outcome === "AWAY" && "text-brand-300")}>{b.away_team}</span>
@@ -470,7 +471,8 @@ export default function TrackingPage() {
                          b.market === "NBA" ? "NBA" : "1X2"}
                       </span>
                     </td>
-                    <td className="py-1.5 px-2 truncate max-w-[140px]">{b.outcome_label}</td>
+                    <td className="py-1.5 px-2 truncate max-w-[140px]"
+                        title={b.outcome_label}>{b.outcome_label}</td>
                     <td className="py-1.5 px-2 text-right font-mono"
                         title={b.opening_odds
                           ? `Opening: ${b.opening_odds.toFixed(2)} → Closing: ${b.odds.toFixed(2)}`
