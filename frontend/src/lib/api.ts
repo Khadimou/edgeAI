@@ -108,6 +108,8 @@ export type TrackingMarket = "ALL" | "FOOTBALL_1X2" | "FOOTBALL_OU" | "FOOTBALL_
 export const trackingApi = {
   live: (days: number = 60, market: TrackingMarket = "ALL") =>
     api.get("/tracking/live", { params: { days, market } }),
+  edgeSweep: (days: number = 180, market: TrackingMarket = "ALL") =>
+    api.get("/tracking/edge-sweep", { params: { days, market } }),
 };
 
 // Admin observability

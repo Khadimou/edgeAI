@@ -12,7 +12,7 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -72,7 +72,7 @@ def train_one_league(df: pd.DataFrame, league: str, n_trials: int = 0) -> tuple[
     brier = float(brier_score_loss((y[valid] == 0).astype(int), oof[valid][:, 0]))
 
     # Modèle final sur tout
-    version = f"perleague_{league.replace(' ', '_').lower()}_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    version = f"perleague_{league.replace(' ', '_').lower()}_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     final = CalibratedClassifierCV(XGBClassifier(**params), method="sigmoid", cv=3)
     final.fit(X, y)
 

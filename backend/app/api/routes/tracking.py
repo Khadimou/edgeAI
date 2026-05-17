@@ -64,14 +64,14 @@ def _actual_ah_pnl_unit(home_score: int, away_score: int, ah_line: float, side: 
     return 0.0
 
 
-def _best_value_bet(candidates, bankroll):
+def _best_value_bet(candidates, bankroll, edge_min=EDGE_MIN, edge_max=EDGE_MAX):
     """Renvoie le meilleur value bet parmi (outcome, prob, odds) candidates."""
     best = None
     for outcome, prob, odds in candidates:
         if not odds or odds <= 1.0 or prob is None:
             continue
         edge = prob * odds - 1
-        if edge < EDGE_MIN or edge > EDGE_MAX:
+        if edge < edge_min or edge > edge_max:
             continue
         b = odds - 1
         f_star = (prob * b - (1 - prob)) / b
@@ -90,22 +90,10 @@ def _best_value_bet(candidates, bankroll):
     return best
 
 
-@router.get("/live")
-async def get_live_tracking(
-    days: int = Query(60, ge=1, le=365),
-    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
-    db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
-):
-    """Renvoie toutes les value bets identifiées en prod sur les N derniers jours."""
+async def _fetch_tracking_rows(db: AsyncSession, days: int):
+    """Fetch les lignes brutes pour les calculs de tracking (1 query, réutilisable)."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
     since_naive = since.replace(tzinfo=None)
-
-    league_wl_1x2 = set(settings.value_bet_leagues)
-    league_wl_ou = set(settings.value_bet_ou_leagues)
-    league_wl_ah = set(settings.value_bet_ah_leagues)
-
-    # Une prédiction (la plus récente) par match + opening odds pour CLV
     result = await db.execute(text("""
         SELECT m.id, m.sport, m.league, m.home_team, m.away_team,
                m.match_date, m.status, m.home_score, m.away_score,
@@ -130,7 +118,14 @@ async def get_live_tracking(
           AND m.match_date <= NOW() + interval '7 days'
         ORDER BY m.match_date ASC
     """), {"since": since_naive})
-    rows = result.fetchall()
+    return result.fetchall()
+
+
+def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
+    """Calcule les value bets pour un seuil d'edge donné. Retourne (bets, bankroll, peak, max_dd)."""
+    league_wl_1x2 = set(settings.value_bet_leagues)
+    league_wl_ou = set(settings.value_bet_ou_leagues)
+    league_wl_ah = set(settings.value_bet_ah_leagues)
 
     bets = []
     bankroll = INITIAL_BANKROLL
@@ -168,7 +163,7 @@ async def get_live_tracking(
                 cands = []
                 market_label = None
         if cands:
-            vb = _best_value_bet(cands, bankroll)
+            vb = _best_value_bet(cands, bankroll, edge_min, edge_max)
             if vb:
                 candidates_by_market[market_label] = vb
 
@@ -176,7 +171,7 @@ async def get_live_tracking(
         if sport != "NBA" and league in league_wl_ou and p_over and p_under:
             ou_vb = _best_value_bet(
                 [("OVER", p_over, o25_odds), ("UNDER", p_under, u25_odds)],
-                bankroll,
+                bankroll, edge_min, edge_max,
             )
             if ou_vb:
                 candidates_by_market["FOOTBALL_OU"] = ou_vb
@@ -186,14 +181,14 @@ async def get_live_tracking(
                 and p_ah_h and p_ah_a and ah_line is not None):
             ah_vb = _best_value_bet(
                 [("AH_HOME", p_ah_h, ah_h_odds), ("AH_AWAY", p_ah_a, ah_a_odds)],
-                bankroll,
+                bankroll, edge_min, edge_max,
             )
             if ah_vb:
                 candidates_by_market["FOOTBALL_AH"] = ah_vb
 
         # Filter by user-requested market
-        if market != "ALL":
-            candidates_by_market = {k: v for k, v in candidates_by_market.items() if k == market}
+        if market_filter != "ALL":
+            candidates_by_market = {k: v for k, v in candidates_by_market.items() if k == market_filter}
 
         if not candidates_by_market:
             continue
@@ -326,8 +321,6 @@ async def get_live_tracking(
             equity.append({"date": (b["match_date"] or "")[:10], "bankroll": cum})
 
     return {
-        "window_days": days,
-        "market_filter": market,
         "summary": {
             "initial_bankroll": INITIAL_BANKROLL,
             "current_bankroll": round(bankroll, 2),
@@ -348,6 +341,86 @@ async def get_live_tracking(
         "per_league": per_league,
         "equity_curve": equity,
         "bets": list(reversed(bets)),  # plus récents d'abord
+    }
+
+
+@router.get("/live")
+async def get_live_tracking(
+    days: int = Query(60, ge=1, le=365),
+    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
+    edge_min: float = Query(EDGE_MIN, ge=0.0, le=0.5),
+    edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Renvoie toutes les value bets identifiées en prod sur les N derniers jours."""
+    rows = await _fetch_tracking_rows(db, days)
+    result = _compute_bets(rows, market, edge_min, edge_max)
+    return {
+        "window_days": days,
+        "market_filter": market,
+        "edge_min": edge_min,
+        "edge_max": edge_max,
+        **result,
+    }
+
+
+# Seuils testés dans le sweep — couvre les configurations classiques :
+# 5% (agressif) → 20% (conservateur, sweet spot du backtest)
+DEFAULT_EDGE_SWEEP = [0.05, 0.08, 0.10, 0.12, 0.15, 0.20]
+
+
+@router.get("/edge-sweep")
+async def get_edge_sweep(
+    days: int = Query(180, ge=1, le=365),
+    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
+    edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """
+    Compare plusieurs seuils d'edge minimum sur la même période pour identifier
+    le sweet spot. Renvoie une ligne synthétique par seuil (ROI, CLV, hit, n_bets, DD).
+    """
+    rows = await _fetch_tracking_rows(db, days)
+    sweep = []
+    for emin in DEFAULT_EDGE_SWEEP:
+        if emin >= edge_max:
+            continue
+        res = _compute_bets(rows, market, emin, edge_max)
+        s = res["summary"]
+        sweep.append({
+            "edge_min": emin,
+            "edge_max": edge_max,
+            "edge_min_percent": round(emin * 100, 1),
+            "n_bets": s["n_settled"],
+            "n_pending": s["n_pending"],
+            "hit_rate": s["hit_rate"],
+            "roi_percent": s["roi_percent"],
+            "total_pnl": s["total_pnl"],
+            "total_staked": s["total_staked"],
+            "current_bankroll": s["current_bankroll"],
+            "max_drawdown_pct": s["max_drawdown_pct"],
+            "clv_avg_percent": s["clv_avg_percent"],
+            "clv_positive_rate": s["clv_positive_rate"],
+            "clv_sample_size": s["clv_sample_size"],
+        })
+
+    # Ranking : meilleur ROI parmi ceux avec ≥30 paris settled (sample suffisant).
+    # Sinon, fallback sur le plus gros sample.
+    significant = [s for s in sweep if s["n_bets"] >= 30]
+    best = (max(significant, key=lambda s: s["roi_percent"])
+            if significant
+            else (max(sweep, key=lambda s: s["n_bets"]) if sweep else None))
+
+    return {
+        "window_days": days,
+        "market_filter": market,
+        "initial_bankroll": INITIAL_BANKROLL,
+        "sweep": sweep,
+        "best_edge_min": best["edge_min"] if best else None,
+        "best_edge_min_percent": best["edge_min_percent"] if best else None,
+        "min_sample_size": 30,
     }
 
 

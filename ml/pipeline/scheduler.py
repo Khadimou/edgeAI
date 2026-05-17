@@ -943,7 +943,7 @@ async def _generate_prediction(
                 "prob_away": round(float(p["prob_away"]), 4),
                 "confidence": round(float(max(p["prob_home"], p["prob_draw"], p["prob_away"])), 4),
                 "shap_values": None,
-                "model_version": "dc_" + datetime.utcnow().strftime("%Y%m%d"),
+                "model_version": "dc_" + datetime.now(timezone.utc).strftime("%Y%m%d"),
             }
         except Exception as e:
             log.warning("dc_predict_error_fallback_xgb",

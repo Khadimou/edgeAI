@@ -85,11 +85,14 @@ export default function ChatBubble() {
       };
       setMessages([...updated, reply]);
       setRemaining(r.data.rate_limit_remaining);
-    } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { detail?: string } } };
-      if (err.response?.status === 429) {
-        setError(err.response.data?.detail || "Limite atteinte. Réessaie dans 1h.");
-      } else if (err.response?.status === 503) {
+    } catch (e) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const err: any = e;
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 429) {
+        setError(detail || "Limite atteinte. Réessaie dans 1h.");
+      } else if (status === 503) {
         setError("Chatbot non configuré (clé Anthropic manquante).");
       } else {
         setError("Erreur. Réessaie.");

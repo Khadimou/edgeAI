@@ -80,6 +80,33 @@ interface TrackingData {
   bets: Bet[];
 }
 
+interface EdgeSweepRow {
+  edge_min: number;
+  edge_max: number;
+  edge_min_percent: number;
+  n_bets: number;
+  n_pending: number;
+  hit_rate: number;
+  roi_percent: number;
+  total_pnl: number;
+  total_staked: number;
+  current_bankroll: number;
+  max_drawdown_pct: number;
+  clv_avg_percent: number | null;
+  clv_positive_rate: number | null;
+  clv_sample_size: number;
+}
+
+interface EdgeSweepData {
+  window_days: number;
+  market_filter: string;
+  initial_bankroll: number;
+  sweep: EdgeSweepRow[];
+  best_edge_min: number | null;
+  best_edge_min_percent: number | null;
+  min_sample_size: number;
+}
+
 const MARKET_LABELS: Record<string, string> = {
   ALL: "Tous",
   FOOTBALL_1X2: "Foot 1X2",
@@ -153,6 +180,13 @@ export default function TrackingPage() {
   const { data, isLoading } = useQuery<TrackingData>({
     queryKey: ["tracking-live", days, market],
     queryFn: () => trackingApi.live(days, market).then((r) => r.data),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  // Sweep edge sur la même fenêtre — comparaison de 6 seuils en une query DB
+  const { data: sweepData } = useQuery<EdgeSweepData>({
+    queryKey: ["tracking-edge-sweep", days, market],
+    queryFn: () => trackingApi.edgeSweep(days, market).then((r) => r.data),
     refetchInterval: 5 * 60 * 1000,
   });
 
@@ -415,6 +449,114 @@ export default function TrackingPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Comparaison des seuils d'edge */}
+      {sweepData && sweepData.sweep.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="flex items-start gap-3 mb-4">
+            <TrendingUp className="w-5 h-5 text-brand-400 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-sm font-semibold text-gray-200">
+                Sweet spot du seuil d&apos;edge
+              </h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Compare le ROI/CLV/hit rate selon le seuil d&apos;edge minimum (cap 20%).
+                Un edge trop bas = volume mais bruit ; un edge trop haut = sélectif mais peu d&apos;échantillon.
+                Le meilleur seuil est marqué <span className="text-green-400 font-semibold">★</span>{" "}
+                (parmi ceux avec ≥ {sweepData.min_sample_size} paris).
+              </p>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-800">
+                  <th className="py-2 pr-2">Edge min</th>
+                  <th className="py-2 px-2 text-right">N paris</th>
+                  <th className="py-2 px-2 text-right">En attente</th>
+                  <th className="py-2 px-2 text-right">Hit rate</th>
+                  <th className="py-2 px-2 text-right">ROI</th>
+                  <th className="py-2 px-2 text-right">P&L</th>
+                  <th className="py-2 px-2 text-right">Bankroll</th>
+                  <th className="py-2 px-2 text-right" title="Drawdown maximum">DD max</th>
+                  <th className="py-2 px-2 text-right" title="Closing Line Value moyen">CLV moyen</th>
+                  <th className="py-2 px-2 text-right" title="% de paris avec CLV positif">CLV+</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sweepData.sweep.map((s) => {
+                  const isBest = sweepData.best_edge_min === s.edge_min;
+                  const significant = s.n_bets >= sweepData.min_sample_size;
+                  return (
+                    <tr
+                      key={s.edge_min}
+                      className={cn(
+                        "border-b border-gray-800/40",
+                        isBest && "bg-green-500/5",
+                      )}
+                    >
+                      <td className="py-2 pr-2 font-mono">
+                        {isBest && <span className="text-green-400 mr-1">★</span>}
+                        ≥ {s.edge_min_percent.toFixed(0)}%
+                      </td>
+                      <td className={cn(
+                        "py-2 px-2 text-right",
+                        significant ? "text-gray-300" : "text-gray-600",
+                      )} title={significant ? "Échantillon suffisant" : `Échantillon < ${sweepData.min_sample_size}`}>
+                        {s.n_bets}
+                      </td>
+                      <td className="py-2 px-2 text-right text-gray-500">{s.n_pending}</td>
+                      <td className="py-2 px-2 text-right text-gray-300">
+                        {s.n_bets === 0 ? "—" : `${(s.hit_rate * 100).toFixed(1)}%`}
+                      </td>
+                      <td className={cn(
+                        "py-2 px-2 text-right font-semibold",
+                        s.n_bets === 0 ? "text-gray-600" :
+                        s.roi_percent > 0 ? "text-green-400" :
+                        s.roi_percent < 0 ? "text-red-400" : "text-gray-400",
+                      )}>
+                        {s.n_bets === 0 ? "—" : `${s.roi_percent > 0 ? "+" : ""}${s.roi_percent.toFixed(1)}%`}
+                      </td>
+                      <td className={cn(
+                        "py-2 px-2 text-right font-mono",
+                        s.total_pnl > 0 ? "text-green-400" : s.total_pnl < 0 ? "text-red-400" : "text-gray-500",
+                      )}>
+                        {s.n_bets === 0 ? "—" : `${s.total_pnl > 0 ? "+" : ""}${s.total_pnl.toFixed(0)}€`}
+                      </td>
+                      <td className="py-2 px-2 text-right text-gray-400 font-mono">
+                        {s.current_bankroll.toFixed(0)}€
+                      </td>
+                      <td className={cn(
+                        "py-2 px-2 text-right font-mono",
+                        s.max_drawdown_pct > 20 ? "text-red-400" :
+                        s.max_drawdown_pct > 10 ? "text-yellow-400" : "text-gray-400",
+                      )}>
+                        {s.n_bets === 0 ? "—" : `${s.max_drawdown_pct.toFixed(1)}%`}
+                      </td>
+                      <td className={cn(
+                        "py-2 px-2 text-right font-mono",
+                        s.clv_avg_percent === null ? "text-gray-600" :
+                        s.clv_avg_percent > 0 ? "text-green-400" : "text-red-400",
+                      )} title={s.clv_sample_size > 0 ? `${s.clv_sample_size} paris` : ""}>
+                        {s.clv_avg_percent === null
+                          ? "—"
+                          : `${s.clv_avg_percent > 0 ? "+" : ""}${s.clv_avg_percent.toFixed(2)}%`}
+                      </td>
+                      <td className="py-2 px-2 text-right text-gray-400 font-mono">
+                        {s.clv_positive_rate === null ? "—" : `${(s.clv_positive_rate * 100).toFixed(0)}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-gray-600 mt-3">
+            Tous les seuils sont calculés sur la même fenêtre ({sweepData.window_days} jours)
+            et le même filtre marché. Cap edge_max = 20% (filtre les cotes overpriced).
+          </p>
         </div>
       )}
 
