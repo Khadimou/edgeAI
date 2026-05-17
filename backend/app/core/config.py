@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # Filtres value betting calibrés par le tracking 2 ans (958 paris settled).
     # Sweet spot empirique = edge ∈ [5%, 20%] : ROI +5.5% vs +3.5% à 8% (sample
     # x1.4 et drawdown 46% vs 60%). Cap haut 20% filtre les cotes overpriced.
+    #
+    # ⏰ REVIEW DUE : 2026-06-28 (6 semaines après changement edge_min 0.08→0.05).
+    # Ouvrir /tracking fenêtre 60j et comparer ROI live à edge 5% avec le tableau
+    # historique (+5.5%). Si ROI live < +3%, le sweet spot était gonflé par leak
+    # DC → remonter à 0.08 et refit DC en rolling-window. Voir tâche #11.
     value_bet_edge_min: float = 0.05
     value_bet_edge_max: float = 0.20
 
