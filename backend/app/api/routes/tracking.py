@@ -346,7 +346,7 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
 
 @router.get("/live")
 async def get_live_tracking(
-    days: int = Query(60, ge=1, le=365),
+    days: int = Query(60, ge=1, le=1095),
     market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
     edge_min: float = Query(EDGE_MIN, ge=0.0, le=0.5),
     edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
@@ -365,14 +365,16 @@ async def get_live_tracking(
     }
 
 
-# Seuils testés dans le sweep — couvre les configurations classiques :
-# 5% (agressif) → 20% (conservateur, sweet spot du backtest)
-DEFAULT_EDGE_SWEEP = [0.05, 0.08, 0.10, 0.12, 0.15, 0.20]
+# Seuils testés dans le sweep. Couvre toute la gamme :
+# - 2% : très agressif, volume max (utile contre closing odds Pinnacle efficients)
+# - 8% : config actuelle prod
+# - 20% : conservateur, sweet spot historique du backtest
+DEFAULT_EDGE_SWEEP = [0.02, 0.03, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20]
 
 
 @router.get("/edge-sweep")
 async def get_edge_sweep(
-    days: int = Query(180, ge=1, le=365),
+    days: int = Query(180, ge=1, le=1095),
     market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
     edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
     db: AsyncSession = Depends(get_db),

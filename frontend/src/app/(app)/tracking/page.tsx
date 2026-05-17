@@ -171,6 +171,8 @@ const DAYS_OPTIONS = [
   { value: 30, label: "30j" },
   { value: 60, label: "60j" },
   { value: 180, label: "180j" },
+  { value: 365, label: "1 an" },
+  { value: 730, label: "2 ans" },
 ];
 
 export default function TrackingPage() {
