@@ -33,7 +33,8 @@ class Settings(BaseSettings):
 
     # Chatbot pédagogique (glossaire edgeAI via Anthropic Claude Haiku)
     anthropic_api_key: str = ""
-    chat_model: str = "claude-3-5-haiku-20241022"
+    # Haiku 4.5 (octobre 2025+) — l'ancien claude-3-5-haiku-20241022 a été déprécié
+    chat_model: str = "claude-haiku-4-5"
     chat_rate_limit_per_hour: int = 20  # par user
 
     # Whitelist des ligues pour value bets 1X2.
