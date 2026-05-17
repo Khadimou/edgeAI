@@ -18,3 +18,4 @@ websockets==14.1
 anyio==4.6.2
 tenacity==9.0.0
 structlog==24.4.0
+anthropic==0.42.0

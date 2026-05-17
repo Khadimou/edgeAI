@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
 from app.db.session import engine
-from app.api.routes import auth, matches, recommendations, bets, bankroll, stats, users, webhooks, plan, today, model_stats, backtest, tracking, admin
+from app.api.routes import auth, matches, recommendations, bets, bankroll, stats, users, webhooks, plan, today, model_stats, backtest, tracking, admin, chat
 
 logger = logging.getLogger("edgeai")
 
@@ -78,6 +78,7 @@ app.include_router(model_stats.router, prefix="/api/v1")
 app.include_router(backtest.router, prefix="/api/v1")
 app.include_router(tracking.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 
 
 @app.get("/health")

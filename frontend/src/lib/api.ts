@@ -115,3 +115,9 @@ export const adminApi = {
   observability: () => api.get("/admin/observability"),
   explain: (matchId: string) => api.get(`/admin/explain/${matchId}`),
 };
+
+export const chatApi = {
+  status: () => api.get("/chat/status"),
+  message: (message: string, history: { role: "user" | "assistant"; content: string }[]) =>
+    api.post("/chat/message", { message, history }),
+};

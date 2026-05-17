@@ -31,6 +31,11 @@ class Settings(BaseSettings):
 
     sentry_dsn: str = ""
 
+    # Chatbot pédagogique (glossaire edgeAI via Anthropic Claude Haiku)
+    anthropic_api_key: str = ""
+    chat_model: str = "claude-3-5-haiku-20241022"
+    chat_rate_limit_per_hour: int = 20  # par user
+
     # Whitelist des ligues pour value bets 1X2.
     # - Ligue 1 + Bundesliga : modèle global 17k (Ligue 1 +22.1%, Bundesliga +3.3%)
     # - Serie A : modèle per-league dédié (+5.87%, 157 paris, hit 36.3%)
