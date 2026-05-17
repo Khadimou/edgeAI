@@ -703,7 +703,10 @@ async def _process_league(
                 if ah_probs:
                     prediction.update(ah_probs)
             await _upsert_prediction(session, match_id, prediction)
-            await _upsert_odds_from_prediction(session, match_id, prediction)
+            # NE PLUS auto-générer les cotes à partir du modèle (tautologique :
+            # affiche "marché = modèle" car cotes = inverse proba modèle). Les
+            # vraies cotes viennent uniquement de _ingest_foot_odds via odds-api.
+            # await _upsert_odds_from_prediction(session, match_id, prediction)
 
             cache_key = f"prediction:{match_id}"
             await redis.setex(cache_key, PREDICTION_TTL, json.dumps(prediction))
