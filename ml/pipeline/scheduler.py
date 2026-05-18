@@ -63,10 +63,11 @@ NBA_INGEST_LOCK_TTL = 22 * 3600  # NBA fetché 1×/jour pour économiser les 500
 FOOT_ODDS_LOCK_TTL = 22 * 3600   # Odds foot via the-odds-api : idem 1×/jour
 
 
-async def _ingest_nba(session, redis, nba_model=None) -> int:
+async def _ingest_nba(session, redis, nba_model=None, nba_totals_model=None) -> int:
     """
     Fetch NBA upcoming + scores via the-odds-api (1×/jour pour économiser les credits).
-    Si nba_model est fourni, génère aussi les prédictions sur les matchs upcoming.
+    Si nba_model est fourni, génère aussi les prédictions 1X2 sur les upcoming.
+    Si nba_totals_model est fourni, ajoute les probas Over/Under sur la ligne du match.
     Retourne le nombre de matchs ingérés.
     """
     if not ODDS_API_KEY:
@@ -115,6 +116,13 @@ async def _ingest_nba(session, redis, nba_model=None) -> int:
                 prediction = await _generate_nba_prediction(
                     nba_model, normalized, nba_history
                 )
+                # Ajoute les probas Over/Under si modèle dispo + ligne capturée
+                if prediction and nba_totals_model is not None and normalized.get("nba_total_line"):
+                    totals = await _generate_nba_totals_prediction(
+                        nba_totals_model, normalized, nba_history,
+                    )
+                    if totals:
+                        prediction.update(totals)
                 if prediction:
                     await _upsert_prediction(session, match_id, prediction)
                     pred_count += 1
@@ -454,6 +462,63 @@ async def _generate_nba_prediction(model: EdgeAIModelNBA, match_data: dict, hist
         return None
 
 
+def _load_nba_totals_model():
+    """Charge le modèle NBA Totals (CalibratedClassifierCV binaire over/under)."""
+    latest = MODEL_DIR / "model_nba_totals_latest.joblib"
+    if not latest.exists():
+        return None
+    try:
+        return joblib.load(latest)
+    except Exception as e:
+        log.error("nba_totals_model_load_error", error=str(e))
+        return None
+
+
+async def _generate_nba_totals_prediction(
+    bundle: dict, match_data: dict, history
+) -> dict | None:
+    """Prédiction NBA Over/Under sur la ligne du match (nba_total_line).
+
+    Le modèle a appris à prédire P(total_points > closing_line). On lui passe les
+    features NBA + la ligne en feature implicite (déjà encodée par compute_nba_features
+    si elle utilise la ligne, sinon le modèle est neutre vs la ligne et compare
+    juste sa prédiction de points totaux à la ligne du marché).
+
+    Renvoie {prob_over_25, prob_under_25} (clés réutilisées pour stockage en DB).
+    """
+    import numpy as np
+    import pandas as pd
+    try:
+        cal = bundle.get("model") if isinstance(bundle, dict) else bundle
+        if cal is None:
+            return None
+
+        match_date_raw = match_data.get("match_date", "")
+        if isinstance(match_date_raw, str):
+            match_date = pd.Timestamp(match_date_raw.replace("Z", "+00:00")).tz_localize(None)
+        else:
+            match_date = pd.Timestamp(match_date_raw)
+
+        if history is None or len(history) == 0:
+            features = NBAFeatures()
+        else:
+            features = compute_nba_features(
+                match_data["home_team"], match_data["away_team"],
+                match_date, history,
+            )
+
+        X = features.to_array().reshape(1, -1)
+        proba = cal.predict_proba(X)[0]
+        # label=1 → Over, label=0 → Under
+        return {
+            "prob_under_25": round(float(proba[0]), 4),
+            "prob_over_25": round(float(proba[1]), 4),
+        }
+    except Exception as e:
+        log.error("nba_totals_predict_error", error=str(e))
+        return None
+
+
 async def _get_cached_standings(redis, football_client, league_code: str) -> tuple[dict, int, bool]:
     """
     Renvoie (standings, total_teams, was_api_call). Cache Redis 24h.
@@ -496,6 +561,10 @@ async def run_pipeline():
     nba_model = _load_nba_model()
     if nba_model is None:
         log.info("no_nba_model_available")
+
+    nba_totals_model = _load_nba_totals_model()
+    if nba_totals_model is None:
+        log.info("no_nba_totals_model_available")
 
     ou_model = _load_ou_model()
     if ou_model is None:
@@ -562,7 +631,11 @@ async def run_pipeline():
                 log.info("foot_odds_pipeline_done", updated=foot_odds_count)
 
             # Ingestion NBA via the-odds-api (1×/jour, lock Redis)
-            nba_count = await _ingest_nba(session, redis, nba_model=nba_model)
+            nba_count = await _ingest_nba(
+                session, redis,
+                nba_model=nba_model,
+                nba_totals_model=nba_totals_model,
+            )
             if nba_count:
                 log.info("nba_pipeline_done", matches=nba_count)
 
@@ -732,6 +805,10 @@ async def _upsert_match(session: AsyncSession, data: dict) -> str | None:
     row_data.setdefault("home_odds", None)
     row_data.setdefault("draw_odds", None)
     row_data.setdefault("away_odds", None)
+    # NBA Totals : ligne + cotes Over/Under (vide pour foot et NBA sans totals dispo)
+    row_data.setdefault("nba_total_line", None)
+    row_data.setdefault("over_25_odds", None)
+    row_data.setdefault("under_25_odds", None)
 
     try:
         async with session.begin_nested():
@@ -744,7 +821,9 @@ async def _upsert_match(session: AsyncSession, data: dict) -> str | None:
                         home_yellow_cards, away_yellow_cards,
                         home_red_cards, away_red_cards,
                         home_odds, draw_odds, away_odds,
+                        over_25_odds, under_25_odds, nba_total_line,
                         opening_home_odds, opening_draw_odds, opening_away_odds,
+                        opening_over_25_odds, opening_under_25_odds, opening_nba_total_line,
                         opening_captured_at,
                         created_at, updated_at
                     )
@@ -758,9 +837,15 @@ async def _upsert_match(session: AsyncSession, data: dict) -> str | None:
                         CAST(:home_odds AS DOUBLE PRECISION),
                         CAST(:draw_odds AS DOUBLE PRECISION),
                         CAST(:away_odds AS DOUBLE PRECISION),
+                        CAST(:over_25_odds AS DOUBLE PRECISION),
+                        CAST(:under_25_odds AS DOUBLE PRECISION),
+                        CAST(:nba_total_line AS DOUBLE PRECISION),
                         CAST(:home_odds AS DOUBLE PRECISION),
                         CAST(:draw_odds AS DOUBLE PRECISION),
                         CAST(:away_odds AS DOUBLE PRECISION),
+                        CAST(:over_25_odds AS DOUBLE PRECISION),
+                        CAST(:under_25_odds AS DOUBLE PRECISION),
+                        CAST(:nba_total_line AS DOUBLE PRECISION),
                         CASE WHEN CAST(:home_odds AS DOUBLE PRECISION) IS NOT NULL THEN NOW() ELSE NULL END,
                         NOW(), NOW()
                     )
@@ -777,10 +862,16 @@ async def _upsert_match(session: AsyncSession, data: dict) -> str | None:
                             home_odds         = COALESCE(EXCLUDED.home_odds, matches.home_odds),
                             draw_odds         = COALESCE(EXCLUDED.draw_odds, matches.draw_odds),
                             away_odds         = COALESCE(EXCLUDED.away_odds, matches.away_odds),
+                            over_25_odds      = COALESCE(EXCLUDED.over_25_odds, matches.over_25_odds),
+                            under_25_odds     = COALESCE(EXCLUDED.under_25_odds, matches.under_25_odds),
+                            nba_total_line    = COALESCE(EXCLUDED.nba_total_line, matches.nba_total_line),
                             -- Opening : seulement si pas déjà fixé (jamais modifié)
                             opening_home_odds = COALESCE(matches.opening_home_odds, EXCLUDED.home_odds),
                             opening_draw_odds = COALESCE(matches.opening_draw_odds, EXCLUDED.draw_odds),
                             opening_away_odds = COALESCE(matches.opening_away_odds, EXCLUDED.away_odds),
+                            opening_over_25_odds = COALESCE(matches.opening_over_25_odds, EXCLUDED.over_25_odds),
+                            opening_under_25_odds = COALESCE(matches.opening_under_25_odds, EXCLUDED.under_25_odds),
+                            opening_nba_total_line = COALESCE(matches.opening_nba_total_line, EXCLUDED.nba_total_line),
                             opening_captured_at = COALESCE(
                                 matches.opening_captured_at,
                                 CASE WHEN EXCLUDED.home_odds IS NOT NULL THEN NOW() ELSE NULL END

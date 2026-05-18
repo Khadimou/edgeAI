@@ -115,8 +115,12 @@ model Match {
   homeOdds     Float?      @map("home_odds")
   drawOdds     Float?      @map("draw_odds")
   awayOdds     Float?      @map("away_odds")
+  // Pour le foot : over/under 2.5 buts (ligne fixe = 2.5)
+  // Pour la NBA : over/under sur nbaTotalLine (ligne variable, ex 224.5)
+  // On réutilise ces colonnes : pragmatique vs ajouter 3 colonnes NBA dédiées.
   over25Odds   Float?      @map("over_25_odds")
   under25Odds  Float?      @map("under_25_odds")
+  nbaTotalLine Float?      @map("nba_total_line")  // ligne totals NBA, ex 224.5
   ahLine       Float?      @map("ah_line")
   ahHomeOdds   Float?      @map("ah_home_odds")
   ahAwayOdds   Float?      @map("ah_away_odds")
@@ -127,6 +131,7 @@ model Match {
   openingAwayOdds    Float? @map("opening_away_odds")
   openingOver25Odds  Float? @map("opening_over_25_odds")
   openingUnder25Odds Float? @map("opening_under_25_odds")
+  openingNbaTotalLine Float? @map("opening_nba_total_line")
   openingAhLine      Float? @map("opening_ah_line")
   openingAhHomeOdds  Float? @map("opening_ah_home_odds")
   openingAhAwayOdds  Float? @map("opening_ah_away_odds")

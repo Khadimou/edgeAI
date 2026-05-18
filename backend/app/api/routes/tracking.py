@@ -37,6 +37,14 @@ def _actual_ou(home_score: int, away_score: int) -> str:
     return "OVER" if (home_score + away_score) > 2.5 else "UNDER"
 
 
+def _actual_nba_totals(home_score: int, away_score: int, line: float) -> str | None:
+    """Renvoie 'OVER', 'UNDER' ou None si push (total == ligne exactement, rare)."""
+    total = home_score + away_score
+    if abs(total - line) < 1e-9:
+        return None  # push : remboursement
+    return "OVER" if total > line else "UNDER"
+
+
 def _actual_ah_pnl_unit(home_score: int, away_score: int, ah_line: float, side: str) -> float:
     """
     Renvoie P&L unitaire (-1 loss, 0 push, +1 win, ±0.5 half-push) sur un pari AH.
@@ -98,7 +106,7 @@ async def _fetch_tracking_rows(db: AsyncSession, days: int):
         SELECT m.id, m.sport, m.league, m.home_team, m.away_team,
                m.match_date, m.status, m.home_score, m.away_score,
                m.home_odds, m.draw_odds, m.away_odds,
-               m.over_25_odds, m.under_25_odds,
+               m.over_25_odds, m.under_25_odds, m.nba_total_line,
                m.ah_line, m.ah_home_odds, m.ah_away_odds,
                m.opening_home_odds, m.opening_draw_odds, m.opening_away_odds,
                m.opening_over_25_odds, m.opening_under_25_odds,
@@ -134,7 +142,7 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
 
     for r in rows:
         (match_id, sport, league, home, away, match_date, status,
-         h_score, a_score, h_odds, d_odds, a_odds, o25_odds, u25_odds,
+         h_score, a_score, h_odds, d_odds, a_odds, o25_odds, u25_odds, nba_total_line,
          ah_line, ah_h_odds, ah_a_odds,
          o_h_odds, o_d_odds, o_a_odds, o_o25_odds, o_u25_odds,
          o_ah_h_odds, o_ah_a_odds,
@@ -175,6 +183,16 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
             )
             if ou_vb:
                 candidates_by_market["FOOTBALL_OU"] = ou_vb
+
+        # NBA Totals (over/under sur la ligne du bookmaker, ex 224.5 pts)
+        if (sport == "NBA" and p_over and p_under
+                and o25_odds and u25_odds and nba_total_line is not None):
+            nba_t_vb = _best_value_bet(
+                [("OVER", p_over, o25_odds), ("UNDER", p_under, u25_odds)],
+                bankroll, edge_min, edge_max,
+            )
+            if nba_t_vb:
+                candidates_by_market["NBA_TOTALS"] = nba_t_vb
 
         # Asian Handicap (foot whitelisté seulement)
         if (sport != "NBA" and league in league_wl_ah
@@ -217,10 +235,17 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
                 else:
                     if mkt == "FOOTBALL_OU":
                         outcome_actual = _actual_ou(h_score, a_score)
+                    elif mkt == "NBA_TOTALS" and nba_total_line is not None:
+                        outcome_actual = _actual_nba_totals(h_score, a_score, nba_total_line)
                     else:
                         outcome_actual = _actual_1x2(h_score, a_score)
-                    won = vb["outcome"] == outcome_actual
-                    profit = round(vb["stake"] * (vb["odds"] - 1), 2) if won else -vb["stake"]
+                    if outcome_actual is None:
+                        # Push NBA totals : remboursement, P&L = 0
+                        profit = 0.0
+                        won = None
+                    else:
+                        won = vb["outcome"] == outcome_actual
+                        profit = round(vb["stake"] * (vb["odds"] - 1), 2) if won else -vb["stake"]
                 bankroll = round(bankroll + profit, 2)
                 peak = max(peak, bankroll)
                 if peak > 0:
@@ -347,7 +372,7 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
 @router.get("/live")
 async def get_live_tracking(
     days: int = Query(60, ge=1, le=1095),
-    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
+    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA|NBA_TOTALS)$"),
     edge_min: float = Query(EDGE_MIN, ge=0.0, le=0.5),
     edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
     db: AsyncSession = Depends(get_db),
@@ -375,7 +400,7 @@ DEFAULT_EDGE_SWEEP = [0.02, 0.03, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20]
 @router.get("/edge-sweep")
 async def get_edge_sweep(
     days: int = Query(180, ge=1, le=1095),
-    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA)$"),
+    market: str = Query("ALL", pattern="^(ALL|FOOTBALL_1X2|FOOTBALL_OU|FOOTBALL_AH|NBA|NBA_TOTALS)$"),
     edge_max: float = Query(EDGE_MAX, ge=0.0, le=1.0),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
@@ -430,6 +455,8 @@ def _label_for(outcome: str, market: str, home: str, away: str) -> str:
     """Renvoie un label lisible pour un outcome (ex: nom équipe)."""
     if market == "FOOTBALL_OU":
         return "Plus de 2.5 buts" if outcome == "OVER" else "Moins de 2.5 buts"
+    if market == "NBA_TOTALS":
+        return "Plus de points (Over)" if outcome == "OVER" else "Moins de points (Under)"
     if market == "FOOTBALL_AH":
         return f"{home} (handicap)" if outcome == "AH_HOME" else f"{away} (handicap)"
     if outcome == "HOME":

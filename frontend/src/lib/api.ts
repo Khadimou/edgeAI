@@ -104,7 +104,7 @@ export const backtestApi = {
 };
 
 // Live tracking
-export type TrackingMarket = "ALL" | "FOOTBALL_1X2" | "FOOTBALL_OU" | "FOOTBALL_AH" | "NBA";
+export type TrackingMarket = "ALL" | "FOOTBALL_1X2" | "FOOTBALL_OU" | "FOOTBALL_AH" | "NBA" | "NBA_TOTALS";
 export const trackingApi = {
   live: (days: number = 60, market: TrackingMarket = "ALL") =>
     api.get("/tracking/live", { params: { days, market } }),

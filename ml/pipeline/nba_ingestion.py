@@ -29,7 +29,11 @@ class NBAOddsClient:
         self.last_remaining: int | None = None
 
     async def get_upcoming(self) -> list[dict]:
-        """Récupère les matchs NBA upcoming avec cotes consensus (US bookmakers)."""
+        """Récupère les matchs NBA upcoming avec cotes consensus (US bookmakers).
+
+        Demande à la fois h2h (moneyline) et totals (over/under sur la ligne du
+        bookmaker, ex 224.5 points) pour activer les value bets sur 2 marchés.
+        """
         if not self._key:
             log.warning("nba_odds_no_key")
             return []
@@ -39,7 +43,7 @@ class NBAOddsClient:
                 params={
                     "apiKey": self._key,
                     "regions": "us",
-                    "markets": "h2h",
+                    "markets": "h2h,totals",
                     "oddsFormat": "decimal",
                 },
             )
@@ -104,6 +108,65 @@ def _median(values: list[float]) -> float:
     return (s[n // 2 - 1] + s[n // 2]) / 2
 
 
+def _consensus_totals(bookmakers: list[dict]) -> tuple[float | None, float | None, float | None]:
+    """Calcule la ligne totals consensus + cotes Over/Under (médianes sur tous bookies).
+
+    Renvoie (line, over_odds, under_odds). La ligne est arrondie au quart de point
+    le plus proche (les bookies utilisent des lignes type X.0, X.5, parfois X.25).
+    Si les bookies ont des lignes différentes, on prend la médiane des lignes et on
+    ne garde que les cotes des bookies à cette ligne consensus.
+    """
+    # Étape 1 : trouver la ligne consensus
+    all_lines: list[float] = []
+    for bk in bookmakers:
+        for market in bk.get("markets", []):
+            if market.get("key") != "totals":
+                continue
+            for outcome in market.get("outcomes", []):
+                pt = outcome.get("point")
+                if pt is not None:
+                    try:
+                        all_lines.append(float(pt))
+                    except (TypeError, ValueError):
+                        pass
+    if not all_lines:
+        return None, None, None
+    consensus_line = _median(all_lines)
+
+    # Étape 2 : récupérer les cotes Over/Under à cette ligne (tolérance ±0.5)
+    overs: list[float] = []
+    unders: list[float] = []
+    for bk in bookmakers:
+        for market in bk.get("markets", []):
+            if market.get("key") != "totals":
+                continue
+            outcomes = market.get("outcomes", [])
+            over_o = next(
+                (o for o in outcomes
+                 if o.get("name") == "Over" and o.get("point") is not None
+                 and abs(float(o["point"]) - consensus_line) <= 0.5),
+                None,
+            )
+            under_o = next(
+                (o for o in outcomes
+                 if o.get("name") == "Under" and o.get("point") is not None
+                 and abs(float(o["point"]) - consensus_line) <= 0.5),
+                None,
+            )
+            if over_o and under_o:
+                try:
+                    op = float(over_o["price"])
+                    up = float(under_o["price"])
+                    if op > 1 and up > 1:
+                        overs.append(op)
+                        unders.append(up)
+                except (TypeError, ValueError):
+                    pass
+    if not overs or not unders:
+        return consensus_line, None, None
+    return consensus_line, _median(overs), _median(unders)
+
+
 def normalize_nba_upcoming(raw: dict) -> dict | None:
     """Convertit un match brut the-odds-api → format edgeAI."""
     try:
@@ -114,6 +177,8 @@ def normalize_nba_upcoming(raw: dict) -> dict | None:
         home_o, away_o = _consensus_odds(raw.get("bookmakers", []), home, away)
         if home_o is None or away_o is None:
             return None
+        # Totals (over/under) : optionnel, on n'échoue pas si absent
+        total_line, over_o, under_o = _consensus_totals(raw.get("bookmakers", []))
         # Saison NBA : commence en octobre, finit en juin.
         dt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
         season = str(dt.year if dt.month >= 10 else dt.year - 1)
@@ -129,6 +194,9 @@ def normalize_nba_upcoming(raw: dict) -> dict | None:
             "home_odds": home_o,
             "away_odds": away_o,
             "draw_odds": None,  # pas de nul en NBA
+            "nba_total_line": total_line,
+            "over_25_odds": over_o,   # réutilisé pour NBA totals (line = nba_total_line)
+            "under_25_odds": under_o,
         }
     except (KeyError, ValueError) as e:
         log.error("nba_normalize_error", error=str(e))

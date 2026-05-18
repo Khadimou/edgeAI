@@ -112,7 +112,8 @@ const MARKET_LABELS: Record<string, string> = {
   FOOTBALL_1X2: "Foot 1X2",
   FOOTBALL_OU: "Foot O/U",
   FOOTBALL_AH: "Foot AH",
-  NBA: "NBA",
+  NBA: "NBA 1X2",
+  NBA_TOTALS: "NBA Totals",
 };
 
 const MARKET_COLOR: Record<string, string> = {
@@ -120,6 +121,7 @@ const MARKET_COLOR: Record<string, string> = {
   FOOTBALL_OU: "bg-purple-600",
   FOOTBALL_AH: "bg-teal-600",
   NBA: "bg-orange-600",
+  NBA_TOTALS: "bg-pink-600",
 };
 
 function Kpi({ label, value, sub, accent = "default" }: {
@@ -607,11 +609,13 @@ export default function TrackingPage() {
                         "px-1.5 py-0.5 rounded text-[10px] font-semibold",
                         b.market === "FOOTBALL_OU" ? "bg-purple-500/20 text-purple-300" :
                         b.market === "FOOTBALL_AH" ? "bg-teal-500/20 text-teal-300" :
+                        b.market === "NBA_TOTALS" ? "bg-pink-500/20 text-pink-300" :
                         b.market === "NBA" ? "bg-orange-500/20 text-orange-300" :
                         "bg-brand-500/20 text-brand-300"
                       )}>
                         {b.market === "FOOTBALL_OU" ? "O/U" :
                          b.market === "FOOTBALL_AH" ? "AH" :
+                         b.market === "NBA_TOTALS" ? "NBA O/U" :
                          b.market === "NBA" ? "NBA" : "1X2"}
                       </span>
                     </td>
