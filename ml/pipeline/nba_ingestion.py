@@ -2,11 +2,15 @@
 Ingestion NBA via the-odds-api.com (500 req/mois gratuites).
 
 Récupère :
-- Les matchs upcoming avec cotes H2H (moneyline)
+- Les matchs upcoming avec cotes H2H (moneyline) + Totals (over/under)
 - Les scores des matchs récemment terminés
 
 L'API ne fournit que les matchs futurs + résultats récents (~72h).
-Pour l'historique long, voir nba_history.py (à venir en phase 2b).
+Pour l'historique long, voir docs/ROADMAP.md → "Backfill historique NBA".
+
+⚠ QUOTA : le plan gratuit (500 req/mois) est partagé entre foot et NBA.
+Reset le 1er du mois civil. Si épuisement, NBA est totalement à l'arrêt
+(odds + scores tous via cette API). Voir docs/OPERATIONS.md → section quotas.
 """
 import os
 from datetime import datetime, timezone
