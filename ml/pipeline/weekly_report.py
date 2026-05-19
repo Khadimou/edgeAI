@@ -8,6 +8,11 @@ Contenu :
 - État global du modèle (sample 730j) avec sweep edge condensé
 - Matchs à venir 7j (prochaine semaine) avec value bets détectées
 - Alertes auto si métrique anormale
+- 🆕 Analyse IA générée par Claude Haiku (commentaire 200-300 mots avec
+  interprétation des chiffres et suggestions d'amélioration)
+- 🆕 Breakdown ROI par marché (1X2 / AH / OU / NBA) et par ligue
+- 🆕 Indicateurs avancés : profit factor, Sharpe-like, cote moyenne pariée
+- 🆕 Statut système : quota odds-api, dernière date de retrain
 
 Le pipeline tourne toutes les 6h. À un cycle dans la plage [jeudi 21h, vendredi 03h]
 le rapport part. Lock Redis empêche les doublons (clé = numéro de semaine ISO).
@@ -24,6 +29,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -232,6 +238,267 @@ async def _kpis_window(
     }
 
 
+def _breakdown_by_dimension(bets: list[dict], dim: str) -> list[dict]:
+    """Aggrège les paris par marché ou par ligue. Renvoie une liste triée par ROI desc."""
+    buckets: dict[str, dict] = {}
+    for b in bets:
+        if b["won"] is None:  # push, ignore
+            continue
+        key = b.get(dim, "—")
+        bk = buckets.setdefault(key, {"n": 0, "wins": 0, "staked": 0.0, "pnl": 0.0})
+        bk["n"] += 1
+        if b["won"]:
+            bk["wins"] += 1
+        bk["staked"] += b["stake"]
+        bk["pnl"] += b["profit"]
+    rows = []
+    for key, bk in buckets.items():
+        roi = (bk["pnl"] / bk["staked"] * 100) if bk["staked"] > 0 else 0.0
+        rows.append({
+            "label": key,
+            "n": bk["n"],
+            "hit_rate": (bk["wins"] / bk["n"]) if bk["n"] > 0 else 0.0,
+            "pnl": round(bk["pnl"], 2),
+            "roi": round(roi, 1),
+        })
+    return sorted(rows, key=lambda r: -r["roi"])
+
+
+def _advanced_indicators(bets: list[dict]) -> dict:
+    """Calcule indicateurs financiers avancés sur les bets settled."""
+    settled = [b for b in bets if b["won"] is not None]
+    if not settled:
+        return {
+            "profit_factor": None,
+            "sharpe_like": None,
+            "avg_odds": None,
+            "max_win_streak": 0,
+            "max_loss_streak": 0,
+        }
+    gross_wins = sum(b["profit"] for b in settled if b["profit"] > 0)
+    gross_losses = sum(-b["profit"] for b in settled if b["profit"] < 0)
+    profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else None
+
+    # Sharpe-like : ROI / std des profits unitaires (par euro misé)
+    unit_returns = [b["profit"] / b["stake"] for b in settled if b["stake"] > 0]
+    if len(unit_returns) >= 2:
+        mean_r = sum(unit_returns) / len(unit_returns)
+        var = sum((r - mean_r) ** 2 for r in unit_returns) / (len(unit_returns) - 1)
+        std = var ** 0.5
+        sharpe = mean_r / std if std > 0 else None
+    else:
+        sharpe = None
+
+    avg_odds = sum(b["odds"] for b in settled) / len(settled)
+
+    # Streaks (par ordre chronologique)
+    settled_sorted = sorted(settled, key=lambda b: b["match_date"] or datetime.min)
+    max_w = max_l = cur_w = cur_l = 0
+    for b in settled_sorted:
+        if b["won"] is True:
+            cur_w += 1
+            cur_l = 0
+            max_w = max(max_w, cur_w)
+        elif b["won"] is False:
+            cur_l += 1
+            cur_w = 0
+            max_l = max(max_l, cur_l)
+
+    return {
+        "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
+        "sharpe_like": round(sharpe, 3) if sharpe is not None else None,
+        "avg_odds": round(avg_odds, 2),
+        "max_win_streak": max_w,
+        "max_loss_streak": max_l,
+    }
+
+
+def _system_status_html(odds_remaining: int | None, retrain_dates: dict) -> str:
+    """Petite section footer avec statut système."""
+    quota_color = "#dc2626" if (odds_remaining is None or odds_remaining == 0) else \
+                  "#f59e0b" if odds_remaining < 50 else "#059669"
+    quota_str = f"{odds_remaining} req restantes" if odds_remaining is not None else "inconnu"
+
+    retrain_lines = []
+    for label, dt_str in retrain_dates.items():
+        retrain_lines.append(f"<li>{label} : {dt_str or '—'}</li>")
+    retrain_html = "<ul style='margin:4px 0 0 0;padding-left:20px;font-size:12px;color:#6b7280'>" + "".join(retrain_lines) + "</ul>"
+
+    return f"""
+<h3 style="margin:24px 0 8px 0;font-size:14px;color:#111827">🔧 Statut système</h3>
+<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:13px">
+  <strong>Quota odds-api :</strong> <span style="color:{quota_color};font-weight:bold">{quota_str}</span>
+  <div style="margin-top:8px"><strong>Dernier retrain :</strong>{retrain_html}</div>
+</div>
+"""
+
+
+async def _generate_ai_analysis(
+    week_kpis: dict,
+    prev_kpis: dict,
+    global_kpis: dict,
+    per_market: list[dict],
+    per_league: list[dict],
+    advanced: dict,
+) -> str:
+    """Génère un commentaire d'analyse via Claude Haiku 4.5.
+
+    Coût ~$0.002 par appel = $0.10/an pour 52 rapports. Si la clé manque
+    ou l'API échoue, renvoie un fallback texte basique.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return _fallback_analysis(week_kpis, prev_kpis, global_kpis)
+
+    # Compose le contexte data pour Claude
+    pf = advanced["profit_factor"]
+    sharpe = advanced["sharpe_like"]
+    data_context = f"""SEMAINE EN COURS
+- N paris settled : {week_kpis['n_settled']} (en attente : {week_kpis['n_pending']})
+- ROI : {week_kpis['roi_percent']:+.1f}%
+- P&L : {week_kpis['total_pnl']:+.2f}€ sur {week_kpis['total_staked']:.0f}€ misés
+- Hit rate : {week_kpis['hit_rate']*100:.1f}% ({week_kpis['n_wins']}/{week_kpis['n_settled']})
+- CLV moyen : {week_kpis['clv_avg_percent']:+.2f}% si non-None (sample {week_kpis['clv_sample']})
+
+SEMAINE PRÉCÉDENTE (comparaison)
+- N paris settled : {prev_kpis['n_settled']}
+- ROI : {prev_kpis['roi_percent']:+.1f}%
+- Hit rate : {prev_kpis['hit_rate']*100:.1f}%
+
+CUMUL 730 JOURS (état global du modèle)
+- N paris settled : {global_kpis['n_settled']}
+- ROI : {global_kpis['roi_percent']:+.1f}%
+- Drawdown max : {global_kpis['max_drawdown_pct']:.1f}%
+- CLV moyen cumul : {global_kpis['clv_avg_percent']:+.2f}% si non-None
+
+INDICATEURS AVANCÉS (sur la semaine)
+- Profit factor : {pf if pf is not None else 'N/A'} (=somme gains / somme pertes ; >1 = profitable)
+- Sharpe-like : {sharpe if sharpe is not None else 'N/A'} (return moyen normalisé par variance)
+- Cote moyenne pariée : {advanced['avg_odds']}
+- Plus longue série de victoires : {advanced['max_win_streak']}
+- Plus longue série de défaites : {advanced['max_loss_streak']}
+
+BREAKDOWN PAR MARCHÉ
+""" + "\n".join(f"- {m['label']} : {m['n']} paris, ROI {m['roi']:+.1f}%, hit {m['hit_rate']*100:.0f}%"
+               for m in per_market[:6]) + """
+
+BREAKDOWN PAR LIGUE
+""" + "\n".join(f"- {l['label']} : {l['n']} paris, ROI {l['roi']:+.1f}%, hit {l['hit_rate']*100:.0f}%"
+               for l in per_league[:6])
+
+    system_prompt = """Tu es un analyste senior en paris sportifs et value betting,
+expert en machine learning appliqué au sport (Dixon-Coles, XGBoost, calibration).
+
+Le contexte : tu rédiges un commentaire d'analyse pour le rapport hebdo d'edgeAI,
+une plateforme qui détecte les value bets sur foot et NBA via modèles ML (DC pour
+1X2 foot, XGB calibré pour AH/OU/NBA). Mises Kelly fractionnel (¼), edge ∈ [5%, 20%].
+Le tracking est sur backfill 730j avec data leak partiel (DC vu les matchs) — donc
+le ROI absolu cumul est légèrement gonflé mais le ranking inter-edge reste valide.
+
+Ton ROLE : produire un commentaire de 200-280 mots en français qui :
+1. Interprète les KPIs de la semaine en contexte (variance courte vs perf long terme,
+   sample size, CLV comme signal indépendant du résultat).
+2. Identifie les patterns intéressants (marché/ligue qui surperforme ou pas).
+3. Donne 1-2 suggestions concrètes d'amélioration ou alerte si nécessaire
+   (ex: si une ligue/marché a -20% ROI sur >30 paris, suggérer de la retirer
+   de la whitelist).
+
+Ton STYLE : sobre, factuel, comme un partenaire qui revoit la performance.
+Pas de surenchère ("excellent !", "fantastique !"). Pas de jargon inutile.
+Cite des chiffres précis du contexte. Si la semaine est mauvaise mais le cumul
+ok, rappelle que la variance court terme est attendue avec ¼ Kelly. Si tu vois
+un signal préoccupant, dis-le clairement.
+
+Format : 2-3 paragraphes séparés par des lignes vides. Pas de titres ni listes.
+Pas de markdown (le texte sera rendu en HTML <p>)."""
+
+    user_message = f"""Voici les données du rapport :
+
+{data_context}
+
+Rédige le commentaire d'analyse."""
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5",
+                    "max_tokens": 800,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_message}],
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            content = data.get("content", [{}])[0].get("text", "")
+            log.info("weekly_report_ai_generated", tokens=data.get("usage", {}))
+            return content.strip()
+    except Exception as e:
+        log.error("weekly_report_ai_error", error=str(e))
+        return _fallback_analysis(week_kpis, prev_kpis, global_kpis)
+
+
+def _fallback_analysis(week_kpis: dict, prev_kpis: dict, global_kpis: dict) -> str:
+    """Texte basique si Claude est indisponible."""
+    roi_w = week_kpis["roi_percent"]
+    roi_g = global_kpis["roi_percent"]
+    n = week_kpis["n_settled"]
+    parts = []
+    if n < 5:
+        parts.append(f"Semaine à faible volume ({n} paris settled) — résultats peu significatifs statistiquement.")
+    elif roi_w > 10:
+        parts.append(f"Bonne semaine ({roi_w:+.1f}% ROI) — mais attention à la variance courte avec {n} paris seulement.")
+    elif roi_w < -10:
+        parts.append(f"Semaine difficile ({roi_w:+.1f}% ROI). Sur {n} paris c'est dans la variance attendue de ¼ Kelly, le ROI cumul reste à {roi_g:+.1f}%.")
+    else:
+        parts.append(f"Performance dans la moyenne cette semaine ({roi_w:+.1f}% ROI). Le cumul 730j reste à {roi_g:+.1f}% sur {global_kpis['n_settled']} paris.")
+    parts.append(f"Drawdown max cumulé : {global_kpis['max_drawdown_pct']:.1f}%. Edge min config : 5%.")
+    return "\n\n".join(parts)
+
+
+async def _fetch_system_status(session: AsyncSession, redis) -> dict:
+    """Quota odds-api restant + dernières dates de retrain des modèles."""
+    odds_remaining = None
+    try:
+        raw = await redis.get("odds_api:remaining")
+        if raw:
+            odds_remaining = int(raw)
+    except Exception:
+        pass
+
+    # Dernier model_version par sport (proxy de date retrain)
+    retrain_dates: dict = {"1X2 foot (DC)": None, "OU foot": None, "AH foot": None,
+                           "NBA 1X2": None, "NBA Totals": None}
+    try:
+        rows = (await session.execute(text("""
+            SELECT model_version, MAX(computed_at) as last_used
+            FROM predictions
+            WHERE model_version IS NOT NULL
+              AND model_version NOT LIKE 'backfill_%'
+            GROUP BY model_version
+            ORDER BY last_used DESC
+            LIMIT 20
+        """))).fetchall()
+        for row in rows:
+            mv = row[0]
+            last = row[1]
+            if last is None:
+                continue
+            dt_str = last.strftime("%Y-%m-%d")
+            if mv.startswith("dc_") and retrain_dates["1X2 foot (DC)"] is None:
+                retrain_dates["1X2 foot (DC)"] = dt_str
+    except Exception as e:
+        log.warning("weekly_report_retrain_dates_error", error=str(e))
+
+    return {"odds_remaining": odds_remaining, "retrain_dates": retrain_dates}
+
+
 def _delta_str(curr: float | None, prev: float | None, suffix: str = "") -> str:
     """Renvoie '+1.2pp' ou '-3.4pp' ou '—' si une valeur manque."""
     if curr is None or prev is None:
@@ -258,6 +525,11 @@ def _build_report_html(
     upcoming_bets: list[dict],
     app_url: str,
     week_label: str,
+    ai_analysis: str = "",
+    per_market: list[dict] | None = None,
+    per_league: list[dict] | None = None,
+    advanced: dict | None = None,
+    system_status: dict | None = None,
 ) -> str:
     w = week_kpis
     p = prev_kpis
@@ -333,6 +605,101 @@ def _build_report_html(
     clv_str = f"{w['clv_avg_percent']:+.2f}%" if w["clv_avg_percent"] is not None else "—"
     prev_clv_str = f"{p['clv_avg_percent']:+.2f}%" if p["clv_avg_percent"] is not None else "—"
 
+    # Section AI analysis
+    ai_html = ""
+    if ai_analysis:
+        paragraphs = [f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:#374151">{p.strip()}</p>'
+                      for p in ai_analysis.split("\n\n") if p.strip()]
+        ai_html = f"""
+        <h2 style="margin:24px 0 12px 0;font-size:16px;color:#111827">🧠 Analyse</h2>
+        <div style="background:#f0f9ff;border-left:3px solid #3b82f6;padding:16px;border-radius:0 8px 8px 0;margin-bottom:24px">
+          {"".join(paragraphs)}
+        </div>
+        """
+
+    # Section breakdown par marché + ligue
+    def _breakdown_table_html(rows: list[dict], title: str) -> str:
+        if not rows:
+            return ""
+        row_html = []
+        for r in rows[:5]:
+            color = "#059669" if r["roi"] >= 0 else "#dc2626"
+            sign = "+" if r["roi"] >= 0 else ""
+            row_html.append(f"""
+            <tr style="border-bottom:1px solid #e5e7eb">
+              <td style="padding:6px 8px;font-size:13px">{r['label']}</td>
+              <td style="padding:6px 8px;font-size:12px;color:#6b7280;text-align:right">{r['n']}</td>
+              <td style="padding:6px 8px;font-size:12px;color:#6b7280;text-align:right">{r['hit_rate']*100:.0f}%</td>
+              <td style="padding:6px 8px;font-size:13px;text-align:right;font-weight:bold;color:{color}">{sign}{r['roi']:.1f}%</td>
+            </tr>
+            """)
+        return f"""
+        <h3 style="margin:0 0 8px 0;font-size:14px;color:#111827">{title}</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f3f4f6"><th style="padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:#6b7280">Catégorie</th><th style="padding:6px 8px;text-align:right;font-size:10px;text-transform:uppercase;color:#6b7280">N</th><th style="padding:6px 8px;text-align:right;font-size:10px;text-transform:uppercase;color:#6b7280">Hit</th><th style="padding:6px 8px;text-align:right;font-size:10px;text-transform:uppercase;color:#6b7280">ROI</th></tr></thead>
+          <tbody>{"".join(row_html)}</tbody>
+        </table>
+        """
+
+    market_html = _breakdown_table_html(per_market or [], "Par marché")
+    league_html = _breakdown_table_html(per_league or [], "Par ligue")
+    breakdown_section_html = ""
+    if market_html or league_html:
+        breakdown_section_html = f"""
+        <h2 style="margin:24px 0 12px 0;font-size:16px;color:#111827">📊 Breakdown semaine</h2>
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <td style="vertical-align:top;width:50%;padding-right:8px">{market_html}</td>
+            <td style="vertical-align:top;width:50%;padding-left:8px">{league_html}</td>
+          </tr>
+        </table>
+        """
+
+    # Section indicateurs avancés
+    advanced_html = ""
+    if advanced:
+        pf = advanced["profit_factor"]
+        sh = advanced["sharpe_like"]
+        avg = advanced["avg_odds"]
+        mw = advanced["max_win_streak"]
+        ml = advanced["max_loss_streak"]
+        pf_color = "#059669" if pf is not None and pf > 1 else "#dc2626" if pf is not None else "#9ca3af"
+        advanced_html = f"""
+        <h3 style="margin:24px 0 8px 0;font-size:14px;color:#111827">📐 Indicateurs avancés (semaine)</h3>
+        <table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">
+          <tr>
+            <td style="padding:10px;font-size:12px;text-align:center;border-right:1px solid #e5e7eb">
+              <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Profit factor</div>
+              <div style="font-weight:bold;color:{pf_color};font-size:16px;margin-top:2px">{pf if pf is not None else '—'}</div>
+              <div style="color:#9ca3af;font-size:10px">&gt;1 = profitable</div>
+            </td>
+            <td style="padding:10px;font-size:12px;text-align:center;border-right:1px solid #e5e7eb">
+              <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Sharpe-like</div>
+              <div style="font-weight:bold;font-size:16px;margin-top:2px">{sh if sh is not None else '—'}</div>
+              <div style="color:#9ca3af;font-size:10px">return / variance</div>
+            </td>
+            <td style="padding:10px;font-size:12px;text-align:center;border-right:1px solid #e5e7eb">
+              <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Cote moyenne</div>
+              <div style="font-weight:bold;font-size:16px;margin-top:2px">{avg}</div>
+              <div style="color:#9ca3af;font-size:10px">pariée</div>
+            </td>
+            <td style="padding:10px;font-size:12px;text-align:center">
+              <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Streaks</div>
+              <div style="font-weight:bold;font-size:14px;margin-top:2px"><span style="color:#059669">{mw}W</span> / <span style="color:#dc2626">{ml}L</span></div>
+              <div style="color:#9ca3af;font-size:10px">+long V / +long D</div>
+            </td>
+          </tr>
+        </table>
+        """
+
+    # Section statut système
+    status_html = ""
+    if system_status:
+        status_html = _system_status_html(
+            system_status.get("odds_remaining"),
+            system_status.get("retrain_dates", {}),
+        )
+
     return f"""
 <html>
 <body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#f9fafb;margin:0;padding:20px">
@@ -394,7 +761,15 @@ def _build_report_html(
       </tr>
     </table>
 
+    {ai_html}
+
+    {breakdown_section_html}
+
+    {advanced_html}
+
     {upcoming_html}
+
+    {status_html}
 
     <p style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;text-align:center">
       <a href="{app_url}/tracking" style="color:#2563eb;text-decoration:none;font-weight:500">Voir le tracking complet →</a>
@@ -522,8 +897,24 @@ async def send_weekly_report_if_due(session: AsyncSession, redis, settings) -> b
     # Recommandations 7 prochains jours
     upcoming = await _fetch_upcoming_value_bets(session, settings, edge_min)
 
+    # Nouveau : breakdowns + indicateurs avancés + status système + analyse IA
+    per_market = _breakdown_by_dimension(week_kpis["bets"], "market")
+    per_league = _breakdown_by_dimension(week_kpis["bets"], "league")
+    advanced = _advanced_indicators(week_kpis["bets"])
+    system_status = await _fetch_system_status(session, redis)
+    ai_analysis = await _generate_ai_analysis(
+        week_kpis, prev_kpis, global_kpis, per_market, per_league, advanced,
+    )
+
     week_label = f"du {monday_this.strftime('%d/%m')} au {now.strftime('%d/%m/%Y')}"
-    html = _build_report_html(week_kpis, prev_kpis, global_kpis, upcoming, app_url, week_label)
+    html = _build_report_html(
+        week_kpis, prev_kpis, global_kpis, upcoming, app_url, week_label,
+        ai_analysis=ai_analysis,
+        per_market=per_market,
+        per_league=per_league,
+        advanced=advanced,
+        system_status=system_status,
+    )
 
     roi_sign = "+" if week_kpis["roi_percent"] >= 0 else ""
     subject = f"📊 edgeAI hebdo : ROI {roi_sign}{week_kpis['roi_percent']:.1f}% ({week_kpis['n_settled']} paris)"
