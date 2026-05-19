@@ -673,7 +673,7 @@ export default function TrackingPage() {
         <p>
           Pour chaque match avec prédiction, on simule un pari Kelly fractionné
           ({(0.25 * 100).toFixed(0)}%) sur une bankroll de référence (100€), si l'edge est
-          dans [{(0.08 * 100).toFixed(0)}%, {(0.20 * 100).toFixed(0)}%] et la ligue est whitelistée.
+          dans [{(0.05 * 100).toFixed(0)}%, {(0.20 * 100).toFixed(0)}%] et la ligue est whitelistée.
           Le P&L est calculé sur les matchs FINISHED uniquement. Différence avec le backtest :
           ici on observe les prédictions <strong>réelles</strong> du modèle en prod, pas du OOF simulé.
         </p>
