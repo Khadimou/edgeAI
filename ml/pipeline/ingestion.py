@@ -45,16 +45,22 @@ class FootballDataClient:
             return []
 
     async def get_recently_finished(self, league_code: str, days: int = 2) -> list[dict]:
+        """Fetch les matchs récents avec status TERMINAL (FINISHED, CANCELLED,
+        POSTPONED, SUSPENDED). On ne filtre PAS côté API par status car on a
+        besoin des annulés/reportés pour les sortir de la liste 'En attente'.
+        """
         from datetime import timedelta
         date_from = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         date_to = _today()
         try:
             resp = await self._client.get(
                 f"/competitions/{league_code}/matches",
-                params={"status": "FINISHED", "dateFrom": date_from, "dateTo": date_to},
+                params={"dateFrom": date_from, "dateTo": date_to},
             )
             resp.raise_for_status()
-            return resp.json().get("matches", [])
+            all_matches = resp.json().get("matches", [])
+            terminal = {"FINISHED", "CANCELLED", "POSTPONED", "SUSPENDED"}
+            return [m for m in all_matches if m.get("status") in terminal]
         except Exception as e:
             log.error("football_data_finished_error", league=league_code, error=str(e))
             return []

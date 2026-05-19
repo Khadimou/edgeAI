@@ -126,6 +126,7 @@ async def _fetch_tracking_rows(db: AsyncSession, days: int):
         ) p ON TRUE
         WHERE m.match_date >= :since
           AND m.match_date <= NOW() + interval '7 days'
+          AND m.status NOT IN ('CANCELLED', 'POSTPONED')
         ORDER BY m.match_date ASC
     """), {"since": since_naive})
     return result.fetchall()
