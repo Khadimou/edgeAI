@@ -12,3 +12,4 @@ optuna==4.1.0
 joblib==1.4.2
 tenacity==9.0.0
 structlog==24.4.0
+tzdata==2024.2

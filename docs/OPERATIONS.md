@@ -240,6 +240,79 @@ SELECT sport, status, COUNT(*) FROM matches GROUP BY 1,2;
 "
 ```
 
+## Rapport hebdomadaire par email
+
+Un rapport HTML est envoyé automatiquement chaque **jeudi à partir de 21h Europe/Paris** par email à `NOTIFICATION_EMAIL_TO` via Brevo (réutilise l'infra notifications existante).
+
+**Contenu** :
+- KPIs semaine en cours (ROI, P&L, hit rate, CLV) + delta vs semaine -1
+- État global du modèle sur 730 jours (ROI cumul, drawdown max, sample size)
+- Top 3 victoires + Top 3 défaites de la semaine
+- Recommandations à venir (matchs 7j avec value bets)
+- Alertes auto si ROI semaine < -10%, drawdown > 70%, ou CLV moyen < -2%
+
+**Mécanisme** :
+- Le pipeline ml_worker tourne toutes les 6h. La fonction `send_weekly_report_if_due()`
+  dans `ml/pipeline/weekly_report.py` vérifie à chaque cycle si on est jeudi 21h+.
+- Lock Redis (`weekly_report:YYYY-WNN`) empêche les doublons : 1 envoi par semaine ISO.
+- Si le cycle de 21h tombe sur jeudi → envoi cette nuit-là. Sinon : prochain cycle (max ~3h plus tard).
+
+**Reconfiguration du destinataire** :
+```bash
+# dans /opt/edgeai/.env
+NOTIFICATION_EMAIL_TO=nouvel-email@example.com
+docker compose -f docker-compose.yml -f docker-compose.prod.yml restart ml_worker
+```
+
+**Force un envoi pour test** (one-shot, ignore le lock) :
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm ml_worker python -c "
+import asyncio, os
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+import redis.asyncio as aioredis
+from pipeline.weekly_report import _build_report_html, _kpis_window, _fetch_upcoming_value_bets, _send_brevo_email
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+PARIS_TZ = ZoneInfo('Europe/Paris')
+
+raw = os.environ['DATABASE_URL']
+url = raw.replace('postgresql://', 'postgresql+asyncpg://').split('?')[0]
+engine = create_async_engine(url, pool_pre_ping=True)
+Session = async_sessionmaker(engine, expire_on_commit=False)
+
+class S:
+    value_bet_leagues=['Ligue 1', 'Bundesliga', 'Serie A']
+    value_bet_ou_leagues=[]
+    value_bet_ah_leagues=['Ligue 1', 'Premier League', 'Serie A']
+    value_bet_edge_min=0.05
+    value_bet_edge_max=0.20
+
+async def main():
+    settings = S()
+    async with Session() as s:
+        now = datetime.now(PARIS_TZ)
+        monday = (now - timedelta(days=now.weekday())).replace(hour=0,minute=0,second=0,microsecond=0)
+        prev_monday = monday - timedelta(days=7)
+        week = await _kpis_window(s, settings, monday.astimezone(timezone.utc), now.astimezone(timezone.utc), 0.05)
+        prev = await _kpis_window(s, settings, prev_monday.astimezone(timezone.utc), monday.astimezone(timezone.utc), 0.05)
+        glob = await _kpis_window(s, settings, now.astimezone(timezone.utc) - timedelta(days=730), now.astimezone(timezone.utc), 0.05)
+        glob['edge_min_pct'] = 5
+        glob['max_drawdown_pct'] = 38.0  # approximation pour test
+        upcoming = await _fetch_upcoming_value_bets(s, settings, 0.05)
+        html = _build_report_html(week, prev, glob, upcoming, os.environ.get('APP_BASE_URL', 'https://edgeai-betting.duckdns.org'), f'du {monday.strftime(\"%d/%m\")} au {now.strftime(\"%d/%m\")}')
+        ok = await _send_brevo_email(
+            os.environ['BREVO_API_KEY'],
+            os.environ['NOTIFICATION_EMAIL_FROM'],
+            os.environ['NOTIFICATION_EMAIL_TO'],
+            f'[TEST] edgeAI hebdo : ROI {week[\"roi_percent\"]:+.1f}%',
+            html,
+        )
+        print('OK' if ok else 'FAIL')
+asyncio.run(main())
+"
+```
+
 ## Maintenance hebdo recommandée
 
 À mettre dans un cron côté hôte (pas encore fait) :

@@ -29,6 +29,7 @@ from .settle import settle_finished_bets
 from .drift import check_drift_and_rollback
 from .trainer import maybe_auto_retrain_all
 from .notifications import notify_new_value_bets
+from .weekly_report import send_weekly_report_if_due
 import joblib
 
 log = structlog.get_logger()
@@ -667,8 +668,10 @@ async def run_pipeline():
                 import os as _os
                 backend_settings = SimpleNamespace(
                     value_bet_leagues=_os.getenv("VALUE_BET_LEAGUES", "Ligue 1,Bundesliga,Serie A").split(","),
-                    value_bet_ou_leagues=_os.getenv("VALUE_BET_OU_LEAGUES", "Premier League").split(","),
+                    value_bet_ou_leagues=[x for x in _os.getenv("VALUE_BET_OU_LEAGUES", "").split(",") if x],
                     value_bet_ah_leagues=_os.getenv("VALUE_BET_AH_LEAGUES", "Ligue 1,Premier League,Serie A").split(","),
+                    value_bet_edge_min=float(_os.getenv("VALUE_BET_EDGE_MIN", "0.05")),
+                    value_bet_edge_max=float(_os.getenv("VALUE_BET_EDGE_MAX", "0.20")),
                 )
             async with async_session() as notif_session:
                 try:
@@ -677,6 +680,14 @@ async def run_pipeline():
                         log.info("notifications_done", count=n_notified)
                 except Exception as e:
                     log.error("notifications_error", error=str(e))
+
+                # Rapport hebdo (jeudi >21h Europe/Paris, lock Redis 1×/semaine)
+                try:
+                    sent = await send_weekly_report_if_due(notif_session, redis, backend_settings)
+                    if sent:
+                        log.info("weekly_report_done")
+                except Exception as e:
+                    log.error("weekly_report_error", error=str(e))
     finally:
         await football_client.close()
         await odds_client.close()
