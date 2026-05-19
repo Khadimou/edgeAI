@@ -257,10 +257,16 @@ def _compute_bets(rows, market_filter: str, edge_min: float, edge_max: float):
 
             # CLV : (opening_odds / closing_odds) - 1 sur l'outcome parié.
             # Positif = la cote a baissé après notre détection → on a bien anticipé le marché.
+            # Filtre |CLV| > 30% : ces écarts sont impossibles dans la vraie vie (la cote
+            # ne se divise jamais par 2 ou plus), donc c'est forcément un bug d'ingestion
+            # — soit colonnes inversées (away dans home), soit bookmaker différent entre
+            # opening et closing. Cf. tâche #14 pour l'audit.
             closing_odds, opening_odds = odds_by_outcome.get(vb["outcome"], (None, None))
             clv_percent = None
             if opening_odds and closing_odds and opening_odds > 0 and closing_odds > 0 and opening_odds != closing_odds:
-                clv_percent = round((opening_odds / closing_odds - 1) * 100, 2)
+                raw_clv = (opening_odds / closing_odds - 1) * 100
+                if abs(raw_clv) <= 30:
+                    clv_percent = round(raw_clv, 2)
 
             bets.append({
                 "match_id": match_id,
