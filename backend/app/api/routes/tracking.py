@@ -17,12 +17,14 @@ from app.db.models import User
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 
-# Mêmes hyperparams que la stratégie déployée
+# Mêmes hyperparams que la stratégie déployée.
 INITIAL_BANKROLL = 100.0
 KELLY_FRACTION = 0.25
 MAX_STAKE_FRACTION = 0.05
-EDGE_MIN = 0.08
-EDGE_MAX = 0.20
+# EDGE_MIN/MAX par défaut = config prod (settings.value_bet_edge_min). Si la
+# config change, le scheduler ml_worker change aussi → on reste sync.
+EDGE_MIN = settings.value_bet_edge_min  # 0.05 au 18 mai 2026
+EDGE_MAX = settings.value_bet_edge_max  # 0.20
 
 
 def _actual_1x2(home_score: int, away_score: int) -> str:
