@@ -640,6 +640,12 @@ async def run_pipeline():
             if nba_count:
                 log.info("nba_pipeline_done", matches=nba_count)
 
+            # Commit IMMÉDIAT de toute l'ingestion (foot + NBA + odds + prédictions)
+            # AVANT l'auto-retrain qui est long (~5-7 min). Sinon une interruption
+            # (restart, crash, OOM) pendant le retrain annule TOUTE l'ingestion non
+            # commitée — bug observé le 21/05/2026 (NBA jamais persistée).
+            await session.commit()
+
             # Settlement automatique des paris sur matchs terminés
             settled = await settle_finished_bets(session)
             if settled:
@@ -862,6 +868,11 @@ async def _upsert_match(session: AsyncSession, data: dict) -> str | None:
                     )
                     ON CONFLICT (external_id) DO UPDATE
                         SET status            = EXCLUDED.status,
+                            -- Met à jour la date si elle change (matchs reportés,
+                            -- ou même id the-odds-api ré-annoncé avec une nouvelle
+                            -- commence_time). Sinon des matchs restaient bloqués à
+                            -- une date passée → invisibles dans le tracking "à venir".
+                            match_date        = EXCLUDED.match_date,
                             home_score        = COALESCE(EXCLUDED.home_score, matches.home_score),
                             away_score        = COALESCE(EXCLUDED.away_score, matches.away_score),
                             ht_home_score     = COALESCE(EXCLUDED.ht_home_score, matches.ht_home_score),
