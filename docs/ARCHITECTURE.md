@@ -150,12 +150,16 @@ fit(df,
 **Features foot** : 67 fields (Phase 2 = Phase 1 + shots/SOT/corners). Pour OU on bascule en Phase 1 (52 fields) car les shots dégradent (-12pts ROI au backtest — contre-intuitif mais empirique).
 
 **Auto-retrain** : `maybe_auto_retrain_*` dans `ml/pipeline/trainer.py`. Conditions :
-- ≥ `RETRAIN_MIN_SAMPLES` (≈ 500) nouveaux samples depuis le dernier retrain
-- cooldown 24h respecté
-- nouveau log_loss ne régresse pas de plus de 5% vs current
+- ≥ `RETRAIN_MIN_SAMPLES` (= 50) nouveaux samples depuis le dernier retrain
+- cooldown 24h respecté (`RETRAIN_COOLDOWN_HOURS`)
+- nouveau log_loss ne régresse pas de plus de 5% vs current (`MAX_LOG_LOSS_REGRESSION`)
+- seuils absolus : log_loss < 1.10, accuracy > 0.44
 - Bypass de la régression si `features_hash` a changé (schema features modifié)
 
-Le cycle ml_worker check ces conditions à chaque tour. Sur prod ça retrain ~1×/semaine en moyenne.
+Le cycle ml_worker check ces conditions à chaque tour. Sur prod ça retrain ~1-2×/semaine.
+
+> **Explication détaillée** de la conception et de l'entraînement quotidien des
+> modèles : voir `docs/MODELS.md`.
 
 ### NBA Totals — `ml/nba_totals_pipeline.py`
 

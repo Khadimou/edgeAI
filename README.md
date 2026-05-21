@@ -7,6 +7,7 @@
 ## Pour démarrer
 
 - **Tu reprends le projet ?** → lis `docs/ARCHITECTURE.md` (modèles, flux de données, schéma DB, décisions techniques)
+- **Comment marchent les modèles IA ?** → `docs/MODELS.md` (conception Dixon-Coles + XGBoost, feature engineering, entraînement quotidien automatique, gates de déploiement)
 - **Tu veux déployer ou debugger ?** → `docs/OPERATIONS.md` (deploy VPS, commands utiles, troubleshooting récurrent)
 - **Tu cherches quoi faire ensuite ?** → `docs/ROADMAP.md` (todos prioritaires, limites connues, idées d'évolution)
 
@@ -116,6 +117,7 @@ edgeAI/
 ├── README.md                     # ce fichier
 ├── docs/
 │   ├── ARCHITECTURE.md           # détails modèles, flux, schema DB
+│   ├── MODELS.md                 # conception + entraînement quotidien des modèles IA
 │   ├── OPERATIONS.md             # deploy, debug, commands utiles
 │   └── ROADMAP.md                # todos + idées
 │
