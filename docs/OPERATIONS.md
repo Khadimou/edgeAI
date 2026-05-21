@@ -53,6 +53,47 @@ ALTER TABLE matches ADD COLUMN IF NOT EXISTS my_new_col DOUBLE PRECISION;
 "
 ```
 
+## Sécurité
+
+### Redis ne doit JAMAIS être exposé sur l'host
+
+**Incident 19/05/2026** : le BSI/CERT-Bund a signalé via Hetzner que le Redis était
+accessible depuis Internet sans auth (port 6379 ouvert). Cause : `docker-compose.yml`
+publiait `"6379:6379"` (bind 0.0.0.0) et le `ports: []` du prod override **ne
+l'effaçait pas** — Docker Compose concatène les listes `ports` au lieu de les
+remplacer. **Docker bypasse aussi ufw** (écrit directement dans iptables), donc un
+firewall classique ne protège pas les ports publiés.
+
+**Fix appliqué** :
+1. Suppression totale du mapping de port Redis (les containers le joignent via le
+   réseau interne `redis:6379`, jamais besoin d'exposer sur l'host)
+2. Mot de passe Redis obligatoire (`--requirepass`), via `REDIS_PASSWORD` du `.env`
+3. REDIS_URL devient `redis://:${REDIS_PASSWORD}@redis:6379`
+
+**Règle générale** : aucun service de données (Redis, Postgres) ne doit avoir de
+`ports:` mappé sur `0.0.0.0`. Si besoin d'accès host (genre prisma db push), bind
+sur loopback uniquement : `127.0.0.1:5432:5432`. Pour vérifier ce qui est exposé :
+
+```bash
+# Liste les ports publiés sur toutes interfaces (DANGER si 0.0.0.0)
+docker ps --format '{{.Names}}: {{.Ports}}'
+# Scan externe pour confirmer (depuis une autre machine)
+nmap -p 6379,5432,8000,3000 <IP_VPS>
+```
+
+### Firewall host (défense en profondeur)
+
+Comme Docker bypasse ufw pour les ports publiés, la vraie protection passe par la
+chain `DOCKER-USER` :
+
+```bash
+# Bloque tout accès externe aux ports de données (garde le réseau Docker interne)
+sudo iptables -I DOCKER-USER -p tcp --dport 6379 ! -s 172.16.0.0/12 -j DROP
+sudo iptables -I DOCKER-USER -p tcp --dport 5432 ! -s 172.16.0.0/12 -j DROP
+# Persister les règles au reboot
+sudo apt install -y iptables-persistent && sudo netfilter-persistent save
+```
+
 ## Quotas externes
 
 ### the-odds-api (CRITIQUE — quota mensuel)
@@ -65,7 +106,8 @@ ALTER TABLE matches ADD COLUMN IF NOT EXISTS my_new_col DOUBLE PRECISION;
 Check du quota :
 
 ```bash
-docker exec edgeai-redis-1 redis-cli get odds_api:remaining
+RP=$(grep '^REDIS_PASSWORD=' /opt/edgeai/.env | cut -d= -f2-)
+docker exec edgeai-redis-1 redis-cli -a "$RP" --no-auth-warning get odds_api:remaining
 ```
 
 Pendant l'épuisement :
@@ -230,9 +272,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml restart ml_worke
 docker exec edgeai-postgres-1 psql -U edgeai -d edgeai -c "SELECT version();"
 docker exec edgeai-postgres-1 psql -U edgeai -d edgeai -c "\dt"
 
-# Check Redis
-docker exec edgeai-redis-1 redis-cli keys "*" | head -20
-docker exec edgeai-redis-1 redis-cli get odds_api:remaining
+# Check Redis (Redis a un mot de passe depuis le fix sécurité 20/05/2026)
+# Le -a "$REDIS_PASSWORD" est obligatoire sinon NOAUTH error.
+RP=$(grep '^REDIS_PASSWORD=' /opt/edgeai/.env | cut -d= -f2-)
+docker exec edgeai-redis-1 redis-cli -a "$RP" --no-auth-warning keys "*" | head -20
+docker exec edgeai-redis-1 redis-cli -a "$RP" --no-auth-warning get odds_api:remaining
 
 # Stats de paris en DB
 docker exec edgeai-postgres-1 psql -U edgeai -d edgeai -c "

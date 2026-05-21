@@ -7,7 +7,7 @@
 ### 🔴 2026-06-01 : Reset quota the-odds-api
 
 Le plan gratuit (500 req/mois) est épuisé. Au 1er juin :
-- Vérifier que les credits sont revenus : `docker exec edgeai-redis-1 redis-cli get odds_api:remaining`
+- Vérifier que les credits sont revenus : `RP=$(grep '^REDIS_PASSWORD=' /opt/edgeai/.env | cut -d= -f2-); docker exec edgeai-redis-1 redis-cli -a "$RP" --no-auth-warning get odds_api:remaining`
 - Décider : upgrade à $30/mois (20k req) OU continuer à économiser (allonger les locks de 1h → 6h pour foot)
 
 ### 🟡 2026-06-28 : Recalibrage edge_min
