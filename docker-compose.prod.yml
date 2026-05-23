@@ -69,6 +69,6 @@ services:
       NOTIFICATION_EMAIL_TO: ${NOTIFICATION_EMAIL_TO:-}
       NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:-https://edgeai-betting.duckdns.org}
-      VALUE_BET_LEAGUES: ${VALUE_BET_LEAGUES:-Ligue 1,Bundesliga,Serie A}
+      VALUE_BET_LEAGUES: ${VALUE_BET_LEAGUES:-Ligue 1,Bundesliga,Serie A,World Cup}
       VALUE_BET_OU_LEAGUES: ${VALUE_BET_OU_LEAGUES:-Premier League}
-      VALUE_BET_AH_LEAGUES: ${VALUE_BET_AH_LEAGUES:-Ligue 1,Premier League,Serie A}
+      VALUE_BET_AH_LEAGUES: ${VALUE_BET_AH_LEAGUES:-Ligue 1,Premier League,Serie A,World Cup}

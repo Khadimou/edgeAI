@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # Whitelist des ligues pour value bets 1X2.
     # - Ligue 1 + Bundesliga : modèle global 17k (Ligue 1 +22.1%, Bundesliga +3.3%)
     # - Serie A : modèle per-league dédié (+5.87%, 157 paris, hit 36.3%)
-    value_bet_leagues: list[str] = ["Ligue 1", "Bundesliga", "Serie A"]
+    value_bet_leagues: list[str] = ["Ligue 1", "Bundesliga", "Serie A", "World Cup"]
 
     # Whitelist O/U 2.5 — DÉSACTIVÉ après tracking 2 ans (-8% ROI sur 95 paris).
     # Le modèle OU n'apporte pas de value vs le marché. À ré-activer si retrain
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Whitelist Asian Handicap — backtest 2020-2025 (10609 matchs, edge 10-20%).
     # Plus gros marché en volume : ~870 value bets/an.
     # Serie A +5.8%, Ligue 1 +5.1%, Premier League +3.6% — 3 ligues profitables.
-    value_bet_ah_leagues: list[str] = ["Ligue 1", "Premier League", "Serie A"]
+    value_bet_ah_leagues: list[str] = ["Ligue 1", "Premier League", "Serie A", "World Cup"]
 
     # Ligues qui utilisent leur modèle per-league plutôt que le global.
     # Backtest a montré que seule Serie A en bénéficie (le global est meilleur ailleurs).

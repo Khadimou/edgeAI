@@ -227,7 +227,18 @@ def _load_wc_inference():
         from pathlib import Path
         bundle = joblib.load(latest)
         csv_path = Path("/app/data/raw/international_matches.csv")
-        return WCInference(bundle, csv_path)
+        # Modèle de buts Dixon-Coles (AH + O/U) — optionnel
+        goals_model = None
+        goals_path = MODEL_DIR / "model_wcgoals_latest.joblib"
+        if goals_path.exists():
+            try:
+                from .wc_goals import WCGoalsModel
+                gbundle = joblib.load(goals_path)
+                goals_model = WCGoalsModel.from_dict(gbundle["goals_model"])
+                log.info("wc_goals_model_loaded", n_teams=len(goals_model.attack))
+            except Exception as ge:
+                log.error("wc_goals_model_load_error", error=str(ge))
+        return WCInference(bundle, csv_path, goals_model=goals_model)
     except Exception as e:
         log.error("wc_model_load_error", error=str(e))
         return None
@@ -734,6 +745,20 @@ async def _process_world_cup(code, league_name, session, redis, football_client,
                 )
                 if pred:
                     pred["model_version"] = "wc_intl"
+                    # Marchés de buts (O/U + AH) via Dixon-Coles. Matchs WC = terrain
+                    # neutre sauf pays hôte. AH calculé à la ligne du book si dispo
+                    # (lue en DB : les cotes/AH arrivent via une ingestion odds séparée).
+                    neutral = bool(normalized.get("neutral", True))
+                    ah_row = await session.execute(
+                        text("SELECT ah_line FROM matches WHERE id = :id"),
+                        {"id": match_id},
+                    )
+                    ah_line = ah_row.scalar_one_or_none()
+                    markets = wc_inference.goals_markets(
+                        normalized["home_team"], normalized["away_team"],
+                        neutral=neutral, ah_line=ah_line,
+                    )
+                    pred.update(markets)
                     await _upsert_prediction(session, match_id, pred)
                     pred_count += 1
         if pred_count:

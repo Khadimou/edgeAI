@@ -1,0 +1,18 @@
+{
+  "_comment": "Template config Coupe du Monde 2026. 12 groupes de 4 = 48 equipes. REMPLACER par le tirage officiel une fois connu. Les noms d'equipes DOIVENT correspondre a ceux du dataset martj42 (ex: 'United States', 'South Korea', 'IR Iran', 'China PR', 'Korea Republic'->'South Korea'). Hotes 2026: USA, Canada, Mexico.",
+  "_format": "Top 2 de chaque groupe + 8 meilleurs 3es = 32 qualifies pour la phase finale.",
+  "groups": {
+    "A": ["Mexico", "Poland", "Saudi Arabia", "New Zealand"],
+    "B": ["Canada", "Ecuador", "Tunisia", "Qatar"],
+    "C": ["United States", "Wales", "Iran", "Australia"],
+    "D": ["Argentina", "Nigeria", "Japan", "Panama"],
+    "E": ["France", "Senegal", "Sweden", "Costa Rica"],
+    "F": ["Brazil", "Serbia", "South Korea", "Honduras"],
+    "G": ["Spain", "Croatia", "Morocco", "Jamaica"],
+    "H": ["Germany", "Switzerland", "Egypt", "Bolivia"],
+    "I": ["England", "Netherlands", "Cameroon", "Curacao"],
+    "J": ["Portugal", "Denmark", "Ghana", "Uzbekistan"],
+    "K": ["Belgium", "Uruguay", "Algeria", "Jordan"],
+    "L": ["Italy", "Colombia", "Ivory Coast", "United Arab Emirates"]
+  }
+}

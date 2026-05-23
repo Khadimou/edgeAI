@@ -16,10 +16,16 @@ log = structlog.get_logger()
 
 
 class WCInference:
-    """Holds historical state for WC predictions (lazy-loaded)."""
+    """Holds historical state for WC predictions (lazy-loaded).
 
-    def __init__(self, model_bundle: dict, csv_path: Path):
+    1X2 vient du classifieur XGBoost (model_bundle) ; les marchés de buts
+    (Over/Under, Asian Handicap) viennent du modèle Dixon-Coles `goals_model`
+    (optionnel) qui produit une distribution de scores.
+    """
+
+    def __init__(self, model_bundle: dict, csv_path: Path, goals_model=None):
         self.model = model_bundle.get("model")
+        self.goals_model = goals_model  # WCGoalsModel | None
         self.csv_path = csv_path
         self.df: pd.DataFrame | None = None
         self.elo: dict[str, float] = {}
@@ -77,3 +83,25 @@ class WCInference:
         except Exception as e:
             log.error("wc_predict_error", home=home, away=away, error=str(e))
             return None
+
+    def goals_markets(self, home: str, away: str, neutral: bool = True,
+                      ah_line: float | None = None) -> dict:
+        """
+        Marchés dérivés du modèle de buts Dixon-Coles : O/U 2.5 + AH (au ah_line donné).
+        Renvoie {} si pas de goals_model. N'inclut prob_ah_* que si ah_line fourni.
+        """
+        if self.goals_model is None:
+            return {}
+        try:
+            mp = self.goals_model.market_probs(home, away, neutral=neutral, ah_line=ah_line)
+            out = {
+                "prob_over_25": mp["prob_over"],
+                "prob_under_25": mp["prob_under"],
+            }
+            if ah_line is not None:
+                out["prob_ah_home"] = mp["prob_ah_home"]
+                out["prob_ah_away"] = mp["prob_ah_away"]
+            return out
+        except Exception as e:
+            log.error("wc_goals_markets_error", home=home, away=away, error=str(e))
+            return {}
