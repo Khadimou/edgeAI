@@ -21,6 +21,8 @@ class BetOutcome(str, Enum):
     AWAY = "AWAY"
     OVER = "OVER"
     UNDER = "UNDER"
+    AH_HOME = "AH_HOME"
+    AH_AWAY = "AH_AWAY"
 
 
 class BetStatus(str, Enum):

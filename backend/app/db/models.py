@@ -50,6 +50,8 @@ class BetOutcome(str, enum.Enum):
     AWAY = "AWAY"
     OVER = "OVER"
     UNDER = "UNDER"
+    AH_HOME = "AH_HOME"
+    AH_AWAY = "AH_AWAY"
 
 
 class BetStatus(str, enum.Enum):
@@ -176,7 +178,7 @@ class Recommendation(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: secrets.token_urlsafe(16))
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     match_id: Mapped[str] = mapped_column(String, ForeignKey("matches.id"), nullable=False)
-    outcome: Mapped[str] = mapped_column(Enum("HOME", "DRAW", "AWAY", "OVER", "UNDER", name="BetOutcome", create_type=False), nullable=False)
+    outcome: Mapped[str] = mapped_column(Enum("HOME", "DRAW", "AWAY", "OVER", "UNDER", "AH_HOME", "AH_AWAY", name="BetOutcome", create_type=False), nullable=False)
     edge: Mapped[float] = mapped_column(Float, nullable=False)
     kelly_stake: Mapped[float] = mapped_column(Float, nullable=False)
     recommended_amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -197,7 +199,7 @@ class Bet(Base):
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     match_id: Mapped[str] = mapped_column(String, ForeignKey("matches.id"), nullable=False)
     recommendation_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("recommendations.id"))
-    outcome: Mapped[str] = mapped_column(Enum("HOME", "DRAW", "AWAY", "OVER", "UNDER", name="BetOutcome", create_type=False), nullable=False)
+    outcome: Mapped[str] = mapped_column(Enum("HOME", "DRAW", "AWAY", "OVER", "UNDER", "AH_HOME", "AH_AWAY", name="BetOutcome", create_type=False), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     odds: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(Enum("PENDING", "WON", "LOST", "VOID", "CASHOUT", name="BetStatus", create_type=False), default="PENDING")

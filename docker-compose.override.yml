@@ -1,0 +1,14 @@
+# Override DEV — chargé AUTOMATIQUEMENT par `docker compose up` (sans -f).
+# NON chargé en prod (prod = `docker compose -f docker-compose.yml -f docker-compose.prod.yml up`).
+#
+# Raison d'être : les volumes de dev du frontend (bind mount + volumes anonymes
+# .next/node_modules) ne doivent JAMAIS exister en prod. Un volume anonyme
+# /app/.next persistant MASQUAIT le .next compilé de l'image prod → les nouvelles
+# pages n'apparaissaient jamais (bug récurrent mai 2026). On les isole donc ici.
+
+services:
+  frontend:
+    volumes:
+      - ./frontend:/app      # hot-reload du code
+      - /app/.next           # volume anonyme : ne pas écraser le build du conteneur
+      - /app/node_modules    # volume anonyme : garder les deps installées dans l'image

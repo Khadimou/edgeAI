@@ -21,6 +21,14 @@ interface UpcomingMatch {
   away_odds: number | null;
   over_25_odds: number | null;
   under_25_odds: number | null;
+  ah_line: number | null;
+  ah_home_odds: number | null;
+  ah_away_odds: number | null;
+}
+
+// Format un handicap signé : 1.5 -> "+1.5", -1.5 -> "-1.5"
+function fmtHandicap(line: number): string {
+  return `${line > 0 ? "+" : ""}${line}`;
 }
 
 interface Bet {
@@ -51,11 +59,31 @@ function outcomeOptions(m: UpcomingMatch): { value: string; label: string; odds:
     opts.push({ value: "OVER", label: isNba ? "Over (points)" : "+2.5 buts", odds: m.over_25_odds });
   if (m.under_25_odds)
     opts.push({ value: "UNDER", label: isNba ? "Under (points)" : "-2.5 buts", odds: m.under_25_odds });
+  // Asian Handicap (foot uniquement) : ah_line est le handicap côté domicile,
+  // l'extérieur prend le handicap opposé (-ah_line).
+  if (!isNba && m.ah_line !== null && m.ah_home_odds)
+    opts.push({
+      value: "AH_HOME",
+      label: `${m.home_team} ${fmtHandicap(m.ah_line)}`,
+      odds: m.ah_home_odds,
+    });
+  if (!isNba && m.ah_line !== null && m.ah_away_odds)
+    opts.push({
+      value: "AH_AWAY",
+      label: `${m.away_team} ${fmtHandicap(-m.ah_line)}`,
+      odds: m.ah_away_odds,
+    });
   return opts;
 }
 
 const STATUS_LABELS: Record<string, string> = {
   PENDING: "En attente", WON: "Gagné", LOST: "Perdu", VOID: "Annulé",
+};
+
+const OUTCOME_LABELS: Record<string, string> = {
+  HOME: "Domicile", DRAW: "Nul", AWAY: "Extérieur",
+  OVER: "Over", UNDER: "Under",
+  AH_HOME: "Handicap dom.", AH_AWAY: "Handicap ext.",
 };
 
 export default function JournalPage() {
@@ -257,7 +285,7 @@ export default function JournalPage() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1">
                     <span className="text-xs px-2 py-0.5 rounded-full bg-brand-600/20 text-brand-300 font-semibold">
-                      {STATUS_LABELS[bet.status] ?? bet.status} · {bet.outcome}
+                      {STATUS_LABELS[bet.status] ?? bet.status} · {OUTCOME_LABELS[bet.outcome] ?? bet.outcome}
                     </span>
                     {bet.match && (
                       <p className="font-semibold mt-1">

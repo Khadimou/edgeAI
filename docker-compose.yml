@@ -91,10 +91,10 @@ services:
       NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
     depends_on:
       - backend
-    volumes:
-      - ./frontend:/app
-      - /app/.next
-      - /app/node_modules
+    # PAS de volumes ici. Les volumes dev (bind mount + anonymes .next/node_modules)
+    # sont dans docker-compose.override.yml (chargé seulement en dev `docker compose up`).
+    # Raison : un volume anonyme /app/.next persistant MASQUAIT le .next de l'image en
+    # prod → les nouvelles pages n'apparaissaient jamais (bug récurrent mai 2026).
 
 volumes:
   redis_data:
