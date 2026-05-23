@@ -19,12 +19,13 @@ CACHE_TTL = 300  # 5 min
 @router.get("/upcoming")
 async def get_upcoming_matches(
     league: str | None = Query(None),
-    limit: int = Query(20, le=50),
+    limit: int = Query(20, le=200),
+    days: int = Query(2, ge=1, le=14),
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
     _user: User = Depends(get_current_user),
 ):
-    cache_key = f"matches:upcoming:{league or 'all'}:{limit}"
+    cache_key = f"matches:upcoming:{league or 'all'}:{limit}:{days}"
     cached = await redis.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -35,7 +36,7 @@ async def get_upcoming_matches(
         .where(
             Match.status == "SCHEDULED",
             Match.match_date >= now,
-            Match.match_date <= now + timedelta(hours=48),
+            Match.match_date <= now + timedelta(days=days),
         )
         .options(selectinload(Match.predictions))
         .order_by(Match.match_date)

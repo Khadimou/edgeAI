@@ -53,8 +53,8 @@ export const authApi = {
 
 // Matches
 export const matchesApi = {
-  upcoming: (league?: string, limit?: number) =>
-    api.get("/matches/upcoming", { params: { league, limit } }),
+  upcoming: (league?: string, limit?: number, days?: number) =>
+    api.get("/matches/upcoming", { params: { league, limit, days } }),
   analysis: (matchId: string) =>
     api.get(`/matches/${matchId}/analysis`),
 };

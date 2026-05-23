@@ -16,6 +16,7 @@ import {
   FlaskConical,
   Activity,
   ServerCog,
+  NotebookPen,
   Menu,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { href: "/today", label: "Aujourd'hui", icon: Flame, highlight: true },
   { href: "/plan", label: "Mon Plan", icon: Target },
   { href: "/bankroll", label: "Bankroll", icon: Wallet },
+  { href: "/journal", label: "Mes paris", icon: NotebookPen },
   { href: "/history", label: "Historique", icon: History },
   { href: "/stats", label: "Stats", icon: BarChart3 },
   { href: "/model", label: "Modèle IA", icon: Brain },
