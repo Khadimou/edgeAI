@@ -235,6 +235,7 @@ def _serialize_match(m: Match) -> dict:
         "ah_line": getattr(m, "ah_line", None),
         "ah_home_odds": getattr(m, "ah_home_odds", None),
         "ah_away_odds": getattr(m, "ah_away_odds", None),
+        "nba_total_line": getattr(m, "nba_total_line", None),
         "venue": m.venue,
         "prediction": _serialize_prediction(pred) if pred else None,
     }

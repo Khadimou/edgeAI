@@ -24,6 +24,7 @@ interface UpcomingMatch {
   ah_line: number | null;
   ah_home_odds: number | null;
   ah_away_odds: number | null;
+  nba_total_line: number | null;
 }
 
 // Format un handicap signé : 1.5 -> "+1.5", -1.5 -> "-1.5"
@@ -55,10 +56,14 @@ function outcomeOptions(m: UpcomingMatch): { value: string; label: string; odds:
   if (m.home_odds) opts.push({ value: "HOME", label: m.home_team, odds: m.home_odds });
   if (!isNba && m.draw_odds) opts.push({ value: "DRAW", label: "Match nul", odds: m.draw_odds });
   if (m.away_odds) opts.push({ value: "AWAY", label: m.away_team, odds: m.away_odds });
+  // En NBA, la ligne de points est variable (ex 224.5) → on l'affiche dans le label.
+  const nbaLine = m.nba_total_line;
+  const overLabel = isNba ? (nbaLine != null ? `Over ${nbaLine} pts` : "Over (points)") : "+2.5 buts";
+  const underLabel = isNba ? (nbaLine != null ? `Under ${nbaLine} pts` : "Under (points)") : "-2.5 buts";
   if (m.over_25_odds)
-    opts.push({ value: "OVER", label: isNba ? "Over (points)" : "+2.5 buts", odds: m.over_25_odds });
+    opts.push({ value: "OVER", label: overLabel, odds: m.over_25_odds });
   if (m.under_25_odds)
-    opts.push({ value: "UNDER", label: isNba ? "Under (points)" : "-2.5 buts", odds: m.under_25_odds });
+    opts.push({ value: "UNDER", label: underLabel, odds: m.under_25_odds });
   // Asian Handicap (foot uniquement) : ah_line est le handicap côté domicile,
   // l'extérieur prend le handicap opposé (-ah_line).
   if (!isNba && m.ah_line !== null && m.ah_home_odds)
