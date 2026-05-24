@@ -57,9 +57,10 @@ def _tau(x: np.ndarray, y: np.ndarray, lh: np.ndarray, la: np.ndarray, rho: floa
 class WCGoalsModel:
     attack: dict[str, float] = field(default_factory=dict)
     defense: dict[str, float] = field(default_factory=dict)
+    intercept: float = 0.0     # μ = log du taux de buts de base
     home_adv: float = 0.25
     rho: float = -0.05
-    mean_attack: float = 0.0   # fallback pour équipe inconnue
+    mean_attack: float = 0.0   # fallback pour équipe inconnue (centré → 0)
     mean_defense: float = 0.0
     trained_through: str = ""  # date max du train set
 
@@ -72,8 +73,8 @@ class WCGoalsModel:
 
     def expected_goals(self, home: str, away: str, neutral: bool = True) -> tuple[float, float]:
         ha = 0.0 if neutral else self.home_adv
-        lh = np.exp(self._atk(home) - self._def(away) + ha)
-        la = np.exp(self._atk(away) - self._def(home))
+        lh = np.exp(self.intercept + self._atk(home) - self._def(away) + ha)
+        la = np.exp(self.intercept + self._atk(away) - self._def(home))
         return float(lh), float(la)
 
     def score_matrix(self, home: str, away: str, neutral: bool = True) -> np.ndarray:
@@ -162,6 +163,7 @@ class WCGoalsModel:
     def to_dict(self) -> dict:
         return {
             "attack": self.attack, "defense": self.defense,
+            "intercept": self.intercept,
             "home_adv": self.home_adv, "rho": self.rho,
             "mean_attack": self.mean_attack, "mean_defense": self.mean_defense,
             "trained_through": self.trained_through,
@@ -215,19 +217,21 @@ def fit_dixon_coles(
     w_comp = np.where(df["is_friendly"].astype(bool).to_numpy(), FRIENDLY_WEIGHT, 1.0)
     w = w_time * w_comp
 
-    # Paramètres : [attack(n), defense(n), home_adv, rho]
-    # Contrainte d'identifiabilité : moyenne(attack) = 0 (on la force après optim)
+    # Paramètres : [attack(n), defense(n), intercept μ, home_adv, rho]
+    # μ = taux de buts de base (log). Identifiabilité : on centre attack ET defense
+    # à moyenne 0 après optim, en repliant les moyennes dans μ (λ préservés).
     def unpack(p):
         atk = p[:n]
         dfn = p[n:2 * n]
-        ha = p[2 * n]
-        rho = p[2 * n + 1]
-        return atk, dfn, ha, rho
+        mu = p[2 * n]
+        ha = p[2 * n + 1]
+        rho = p[2 * n + 2]
+        return atk, dfn, mu, ha, rho
 
     def neg_ll(p):
-        atk, dfn, ha, rho = unpack(p)
-        log_lh = atk[h] - dfn[a] + ha * is_home
-        log_la = atk[a] - dfn[h]
+        atk, dfn, mu, ha, rho = unpack(p)
+        log_lh = mu + atk[h] - dfn[a] + ha * is_home
+        log_la = mu + atk[a] - dfn[h]
         lh = np.exp(np.clip(log_lh, -3, 3))
         la = np.exp(np.clip(log_la, -3, 3))
         # log Poisson sans le terme factoriel (constant en p)
@@ -238,24 +242,28 @@ def fit_dixon_coles(
         ll = ll + np.log(tau)
         return -np.sum(w * ll)
 
-    # Init : attack/defense à 0, home_adv 0.25, rho -0.05
-    p0 = np.concatenate([np.zeros(n), np.zeros(n), [0.25], [-0.05]])
-    bounds = [(-2.0, 2.0)] * (2 * n) + [(-0.5, 1.0), (-0.2, 0.2)]
+    # Init : attack/defense à 0, μ = log(1.3) ≈ 0.26, home_adv 0.25, rho -0.05
+    p0 = np.concatenate([np.zeros(n), np.zeros(n), [np.log(1.3)], [0.25], [-0.05]])
+    bounds = [(-2.0, 2.0)] * (2 * n) + [(-1.0, 1.5), (-0.5, 1.0), (-0.2, 0.2)]
 
     res = minimize(neg_ll, p0, method="L-BFGS-B", bounds=bounds,
                    options={"maxiter": 200, "maxfun": 100000})
 
-    atk, dfn, ha, rho = unpack(res.x)
-    # Force moyenne(attack)=0 (transfère le niveau global dans defense pour cohérence)
-    atk = atk - atk.mean()
+    atk, dfn, mu, ha, rho = unpack(res.x)
+    # Centrage : moyenne(attack)=moyenne(defense)=0, μ absorbe le niveau (λ inchangés).
+    a_bar, d_bar = atk.mean(), dfn.mean()
+    mu = float(mu + a_bar - d_bar)
+    atk = atk - a_bar
+    dfn = dfn - d_bar
 
     model = WCGoalsModel(
         attack={t: float(atk[i]) for t, i in tidx.items()},
         defense={t: float(dfn[i]) for t, i in tidx.items()},
+        intercept=mu,
         home_adv=float(ha),
         rho=float(rho),
-        mean_attack=float(np.mean(atk)),
-        mean_defense=float(np.mean(dfn)),
+        mean_attack=0.0,
+        mean_defense=0.0,
         trained_through=str(ref.date()),
     )
     return model
