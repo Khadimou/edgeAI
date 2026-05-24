@@ -637,10 +637,17 @@ async def run_pipeline():
                 )
                 await asyncio.sleep(7)  # gap entre ligues
 
-            # Fetch cotes foot (h2h + O/U 2.5) 1×/jour via the-odds-api
+            # Fetch cotes foot (h2h + O/U 2.5 + AH) 1×/jour via the-odds-api.
+            # Inclut la Coupe du Monde (soccer_fifa_world_cup est dans ODDS_API_SOCCER_KEYS
+            # et les matchs WC sont sport=FOOTBALL/SCHEDULED → mêmes colonnes mises à jour).
             foot_odds_count = await _ingest_foot_odds(session, redis)
             if foot_odds_count:
                 log.info("foot_odds_pipeline_done", updated=foot_odds_count)
+
+            # Prédictions WC APRÈS les cotes : l'AH est calculé à la ligne du book.
+            wc_pred_count = await _generate_wc_predictions(session, wc_inference)
+            if wc_pred_count:
+                log.info("wc_predictions_pipeline_done", count=wc_pred_count)
 
             # Ingestion NBA via the-odds-api (1×/jour, lock Redis)
             nba_count = await _ingest_nba(
@@ -716,9 +723,12 @@ async def run_pipeline():
 
 async def _process_world_cup(code, league_name, session, redis, football_client, wc_inference=None):
     """
-    Process spécifique à la Coupe du Monde :
-    - Fetch matchs WC (récents + upcoming)
-    - Si wc_inference dispo, génère prédictions H/D/A
+    Ingestion des matchs Coupe du Monde (récents + à venir) UNIQUEMENT.
+
+    Les prédictions WC sont générées séparément par _generate_wc_predictions(),
+    APRÈS l'ingestion des cotes (_ingest_foot_odds), pour que l'Asian Handicap soit
+    calculé à la ligne réelle du bookmaker (ah_line). Sinon, au 1er passage ah_line
+    serait NULL → pas d'AH, et la prédiction ne se rafraîchirait jamais.
     """
     try:
         recent_finished = await football_client.get_recently_finished(code, days=2)
@@ -731,40 +741,57 @@ async def _process_world_cup(code, league_name, session, redis, football_client,
 
         upcoming = await football_client.get_upcoming_matches(code, days=14)
         log.info("wc_matches_fetched", count=len(upcoming))
-        pred_count = 0
         for raw in upcoming:
             normalized = normalize_match(raw, league_name)
-            match_id = await _upsert_match(session, normalized)
-
-            # Génère prédiction WC si modèle dispo
-            if wc_inference and match_id:
-                pred = wc_inference.predict(
-                    normalized["home_team"],
-                    normalized["away_team"],
-                    normalized["match_date"],
-                )
-                if pred:
-                    pred["model_version"] = "wc_intl"
-                    # Marchés de buts (O/U + AH) via Dixon-Coles. Matchs WC = terrain
-                    # neutre sauf pays hôte. AH calculé à la ligne du book si dispo
-                    # (lue en DB : les cotes/AH arrivent via une ingestion odds séparée).
-                    neutral = bool(normalized.get("neutral", True))
-                    ah_row = await session.execute(
-                        text("SELECT ah_line FROM matches WHERE id = :id"),
-                        {"id": match_id},
-                    )
-                    ah_line = ah_row.scalar_one_or_none()
-                    markets = wc_inference.goals_markets(
-                        normalized["home_team"], normalized["away_team"],
-                        neutral=neutral, ah_line=ah_line,
-                    )
-                    pred.update(markets)
-                    await _upsert_prediction(session, match_id, pred)
-                    pred_count += 1
-        if pred_count:
-            log.info("wc_predictions_generated", count=pred_count)
+            await _upsert_match(session, normalized)
     except Exception as e:
         log.error("wc_process_error", error=str(e))
+
+
+async def _generate_wc_predictions(session, wc_inference) -> int:
+    """
+    Génère les prédictions WC (1X2 + O/U + AH) sur les matchs WC à venir, APRÈS que
+    les cotes (dont ah_line) aient été ingérées. Remplace les prédictions existantes
+    (delete + insert) pour que l'API serve toujours la plus récente, avec l'AH.
+
+    AH calculé à la ligne du bookmaker (ah_line en DB). Matchs WC = terrain neutre.
+    """
+    if wc_inference is None:
+        return 0
+    try:
+        rows = (await session.execute(text("""
+            SELECT id, home_team, away_team, match_date, ah_line
+            FROM matches
+            WHERE league = 'World Cup' AND status = 'SCHEDULED'
+              AND match_date >= NOW() AND match_date <= NOW() + INTERVAL '14 days'
+        """))).mappings().all()
+
+        count = 0
+        for m in rows:
+            pred = wc_inference.predict(m["home_team"], m["away_team"], m["match_date"])
+            if not pred:
+                continue
+            pred["model_version"] = "wc_intl"
+            markets = wc_inference.goals_markets(
+                m["home_team"], m["away_team"],
+                neutral=True, ah_line=m["ah_line"],
+            )
+            pred.update(markets)
+            # Remplace les prédictions existantes du match (pas de contrainte unique
+            # sur match_id → on purge avant d'insérer la fraîche pour éviter les stale).
+            async with session.begin_nested():
+                await session.execute(
+                    text("DELETE FROM predictions WHERE match_id = :id"),
+                    {"id": m["id"]},
+                )
+            await _upsert_prediction(session, m["id"], pred)
+            count += 1
+        if count:
+            log.info("wc_predictions_generated", count=count)
+        return count
+    except Exception as e:
+        log.error("wc_generate_predictions_error", error=str(e))
+        return 0
 
 
 async def _process_league(
