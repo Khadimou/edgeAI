@@ -13,7 +13,7 @@ Usage:
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -111,7 +111,7 @@ def main():
     # ── Fit final sur TOUTE la donnée (pour la prod) ──
     print(f"\n[2] Fit final sur {len(df)} matchs (toute la donnée)...")
     final = fit_dixon_coles(df, half_life_days=args.half_life)
-    version = "wcgoals_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    version = "wcgoals_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     bundle = {"goals_model": final.to_dict(), "version": version, "market": "WORLD_CUP_GOALS"}
     path = ARTIFACTS / f"model_{version}.joblib"
     joblib.dump(bundle, path)
