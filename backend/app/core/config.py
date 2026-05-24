@@ -31,6 +31,13 @@ class Settings(BaseSettings):
 
     sentry_dsn: str = ""
 
+    # Instagram Graph API — publication automatique des value bets
+    instagram_access_token: str = ""
+    instagram_account_id: str = ""
+    api_base_url: str = ""  # ex: https://edgeai.fr (pour l'URL publique des images)
+    # Token partagé entre le ML pipeline et le backend pour déclencher la publication auto
+    instagram_service_token: str = ""
+
     # Chatbot pédagogique (glossaire edgeAI via Anthropic Claude Haiku)
     anthropic_api_key: str = ""
     # Haiku 4.5 (octobre 2025+) — l'ancien claude-3-5-haiku-20241022 a été déprécié

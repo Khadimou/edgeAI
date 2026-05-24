@@ -227,6 +227,30 @@ async def _send_brevo_email(api_key: str, sender: str, to: str, subject: str, ht
         return False
 
 
+async def _post_to_instagram(best_bet: dict, app_url: str) -> bool:
+    """
+    Déclenche la publication Instagram via l'endpoint interne du backend.
+    Le backend génère l'image et appelle l'API Meta.
+    """
+    service_token = os.getenv("INSTAGRAM_SERVICE_TOKEN", "")
+    if not service_token:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{app_url}/api/v1/instagram/post/auto",
+                json={"bet": best_bet},
+                headers={"X-Service-Token": service_token},
+            )
+            if r.status_code == 200:
+                log.info("instagram_auto_post_ok", match=f"{best_bet.get('home')} vs {best_bet.get('away')}")
+                return True
+            log.warning("instagram_auto_post_failed", status=r.status_code, body=r.text[:200])
+    except Exception as e:
+        log.error("instagram_auto_post_error", error=str(e))
+    return False
+
+
 async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     """
     Trouve les nouveaux value bets (jamais notifiés) et envoie un email digest.
@@ -266,5 +290,19 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     ok = await _send_brevo_email(api_key, from_email, to_email, subject, html)
     if ok:
         log.info("notifications_sent", count=len(new_bets), total=len(current_bets))
+        # Publication Instagram : meilleur value bet (edge le plus élevé)
+        best = max(new_bets, key=lambda b: b["edge"])
+        # Normalise les clés pour correspondre au format attendu par le backend
+        best_normalized = {
+            "home_team": best["home"],
+            "away_team": best["away"],
+            "league": best["league"],
+            "match_date": best["match_date"],
+            "outcome": best["outcome"],
+            "odds": best["odds"],
+            "edge": best["edge"],
+            "kelly_stake": best["edge"] * 0.25,  # Kelly conservateur par défaut
+        }
+        await _post_to_instagram(best_normalized, app_url)
         return len(new_bets)
     return 0

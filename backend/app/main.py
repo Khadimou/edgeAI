@@ -1,14 +1,16 @@
 import logging
 import sentry_sdk
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
 from app.db.session import engine
-from app.api.routes import auth, matches, recommendations, bets, bankroll, stats, users, webhooks, plan, today, model_stats, backtest, tracking, admin, chat
+from app.api.routes import auth, matches, recommendations, bets, bankroll, stats, users, webhooks, plan, today, model_stats, backtest, tracking, admin, chat, instagram
 
 logger = logging.getLogger("edgeai")
 
@@ -79,6 +81,12 @@ app.include_router(backtest.router, prefix="/api/v1")
 app.include_router(tracking.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
+app.include_router(instagram.router, prefix="/api/v1")
+
+# Sert les images générées (nécessaire pour l'URL publique Instagram)
+_static_dir = Path(__file__).parent / "static"
+_static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/health")

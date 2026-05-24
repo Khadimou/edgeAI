@@ -34,6 +34,11 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       # Chatbot Anthropic Claude Haiku (glossaire edgeAI)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Instagram publication automatique
+      INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN:-}
+      INSTAGRAM_ACCOUNT_ID: ${INSTAGRAM_ACCOUNT_ID:-}
+      API_BASE_URL: ${API_BASE_URL:-https://edgeai-betting.duckdns.org}
+      INSTAGRAM_SERVICE_TOKEN: ${INSTAGRAM_SERVICE_TOKEN:-}
 
   frontend:
     build:
@@ -69,6 +74,7 @@ services:
       NOTIFICATION_EMAIL_TO: ${NOTIFICATION_EMAIL_TO:-}
       NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL:-https://edgeai-betting.duckdns.org}
+      INSTAGRAM_SERVICE_TOKEN: ${INSTAGRAM_SERVICE_TOKEN:-}
       VALUE_BET_LEAGUES: ${VALUE_BET_LEAGUES:-Ligue 1,Bundesliga,Serie A,World Cup}
       VALUE_BET_OU_LEAGUES: ${VALUE_BET_OU_LEAGUES:-Premier League}
       VALUE_BET_AH_LEAGUES: ${VALUE_BET_AH_LEAGUES:-Ligue 1,Premier League,Serie A,World Cup}
