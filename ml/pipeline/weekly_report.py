@@ -238,6 +238,94 @@ async def _kpis_window(
     }
 
 
+def _model_metrics_from_rows(rows: list) -> dict:
+    """Métriques prédictives 1X2 (mêmes formules que /model/performance).
+    rows : list de (prob_home, prob_draw, prob_away, home_score, away_score).
+    """
+    from math import log
+    EPS = 1e-15
+    if not rows:
+        return {"n": 0, "accuracy": None, "log_loss": None, "brier_score": None,
+                "home_accuracy": None, "draw_accuracy": None, "away_accuracy": None}
+    correct = 0
+    hc = ht = dc = dt = ac = at = 0
+    ll_sum = brier_sum = 0.0
+    for ph, pd_, pa, hs, as_ in rows:
+        if None in (ph, pd_, pa, hs, as_):
+            continue
+        actual = 0 if hs > as_ else (1 if hs == as_ else 2)
+        probs = [ph, pd_, pa]
+        pred = max(range(3), key=lambda i: probs[i])
+        if pred == actual:
+            correct += 1
+        if actual == 0:
+            ht += 1; hc += (pred == 0)
+        elif actual == 1:
+            dt += 1; dc += (pred == 1)
+        else:
+            at += 1; ac += (pred == 2)
+        p_act = max(min(probs[actual], 1 - EPS), EPS)
+        ll_sum += -log(p_act)
+        for i in range(3):
+            brier_sum += (probs[i] - (1.0 if i == actual else 0.0)) ** 2
+    n = sum(1 for r in rows if None not in r)
+    if n == 0:
+        return {"n": 0, "accuracy": None, "log_loss": None, "brier_score": None,
+                "home_accuracy": None, "draw_accuracy": None, "away_accuracy": None}
+    return {
+        "n": n,
+        "accuracy": round(correct / n, 4),
+        "log_loss": round(ll_sum / n, 4),
+        "brier_score": round(brier_sum / n, 4),
+        "home_accuracy": round(hc / ht, 4) if ht else None,
+        "draw_accuracy": round(dc / dt, 4) if dt else None,
+        "away_accuracy": round(ac / at, 4) if at else None,
+    }
+
+
+async def _model_perf_window(session: AsyncSession, since: datetime, until: datetime) -> dict:
+    """Performance prédictive du modèle 1X2 sur les matchs FINISHED de la fenêtre.
+
+    Mesure la qualité des prédictions (toutes, pas seulement les value bets) vs
+    résultats réels. Exclut les prédictions de backfill (data leak). Ajoute aussi
+    une calibration O/U 2.5 simple (prob over moyenne prédite vs taux over réel).
+    """
+    rows = (await session.execute(text("""
+        SELECT p.prob_home, p.prob_draw, p.prob_away,
+               m.home_score, m.away_score,
+               p.prob_over_25, m.sport
+        FROM matches m
+        JOIN LATERAL (
+            SELECT * FROM predictions
+            WHERE match_id = m.id AND model_version NOT LIKE 'backfill_%'
+            ORDER BY computed_at DESC LIMIT 1
+        ) p ON TRUE
+        WHERE m.status = 'FINISHED'
+          AND m.home_score IS NOT NULL AND m.away_score IS NOT NULL
+          AND m.match_date >= :since AND m.match_date < :until
+    """), {"since": since.replace(tzinfo=None),
+           "until": until.replace(tzinfo=None)})).fetchall()
+
+    metrics = _model_metrics_from_rows([(r[0], r[1], r[2], r[3], r[4]) for r in rows])
+
+    # Calibration O/U 2.5 (foot uniquement, ligne fixe 2.5)
+    ou_pred, ou_actual = [], []
+    for r in rows:
+        po, sport = r[5], r[6]
+        if po is not None and sport != "NBA":
+            ou_pred.append(float(po))
+            ou_actual.append(1.0 if (r[3] + r[4]) > 2.5 else 0.0)
+    if ou_pred:
+        metrics["ou_n"] = len(ou_pred)
+        metrics["ou_pred_over"] = round(sum(ou_pred) / len(ou_pred), 4)
+        metrics["ou_actual_over"] = round(sum(ou_actual) / len(ou_actual), 4)
+        metrics["ou_calib_gap"] = round(metrics["ou_pred_over"] - metrics["ou_actual_over"], 4)
+    else:
+        metrics["ou_n"] = 0
+        metrics["ou_pred_over"] = metrics["ou_actual_over"] = metrics["ou_calib_gap"] = None
+    return metrics
+
+
 def _breakdown_by_dimension(bets: list[dict], dim: str) -> list[dict]:
     """Aggrège les paris par marché ou par ligue. Renvoie une liste triée par ROI desc."""
     buckets: dict[str, dict] = {}
@@ -340,6 +428,8 @@ async def _generate_ai_analysis(
     per_market: list[dict],
     per_league: list[dict],
     advanced: dict,
+    model_perf: dict | None = None,
+    model_perf_prev: dict | None = None,
 ) -> str:
     """Génère un commentaire d'analyse via Claude Haiku 4.5.
 
@@ -386,6 +476,25 @@ BREAKDOWN PAR LIGUE
 """ + "\n".join(f"- {l['label']} : {l['n']} paris, ROI {l['roi']:+.1f}%, hit {l['hit_rate']*100:.0f}%"
                for l in per_league[:6])
 
+    # Performance PRÉDICTIVE du modèle (distincte du ROI des paris)
+    mp = model_perf or {}
+    mpp = model_perf_prev or {}
+    if mp.get("n"):
+        prev_acc = mpp.get("accuracy")
+        prev_acc_txt = f"{prev_acc*100:.1f}%" if prev_acc is not None else "N/A"
+        ou_txt = ""
+        if mp.get("ou_n"):
+            ou_txt = (f"\n- Calibration O/U 2.5 : prédit {mp['ou_pred_over']*100:.0f}% Over vs "
+                      f"{mp['ou_actual_over']*100:.0f}% réel (écart {mp['ou_calib_gap']*100:+.1f}pp, {mp['ou_n']} matchs)")
+        data_context += f"""
+
+PERFORMANCE PRÉDICTIVE DU MODÈLE (1X2, TOUS les matchs joués cette semaine, pas seulement les value bets)
+- N matchs évalués : {mp['n']}
+- Accuracy 1X2 : {mp['accuracy']*100:.1f}% (semaine précédente : {prev_acc_txt})
+- Log-loss : {mp['log_loss']} (sem. préc. {mpp.get('log_loss', 'N/A')} ; plus bas = meilleure calibration)
+- Brier score : {mp['brier_score']} (plus bas = mieux)
+- Accuracy par issue : dom {_pct(mp['home_accuracy'])}, nul {_pct(mp['draw_accuracy'])}, ext {_pct(mp['away_accuracy'])}{ou_txt}"""
+
     system_prompt = """Tu es un analyste senior en paris sportifs et value betting,
 expert en machine learning appliqué au sport (Dixon-Coles, XGBoost, calibration).
 
@@ -395,13 +504,18 @@ une plateforme qui détecte les value bets sur foot et NBA via modèles ML (DC p
 Le tracking est sur backfill 730j avec data leak partiel (DC vu les matchs) — donc
 le ROI absolu cumul est légèrement gonflé mais le ranking inter-edge reste valide.
 
-Ton ROLE : produire un commentaire de 200-280 mots en français qui :
+Ton ROLE : produire un commentaire de 220-320 mots en français qui :
 1. Interprète les KPIs de la semaine en contexte (variance courte vs perf long terme,
    sample size, CLV comme signal indépendant du résultat).
-2. Identifie les patterns intéressants (marché/ligue qui surperforme ou pas).
-3. Donne 1-2 suggestions concrètes d'amélioration ou alerte si nécessaire
+2. Commente la PERFORMANCE PRÉDICTIVE DU MODÈLE séparément du ROI : accuracy/log-loss/
+   Brier et calibration O/U. Point clé à expliquer : le modèle peut bien prédire
+   (bonne accuracy/calibration) tout en ayant un ROI négatif sur la semaine (variance),
+   ou l'inverse. Si log-loss/Brier se dégradent vs la semaine précédente, signale une
+   possible dérive du modèle ; si la calibration O/U dérape (|écart| > 10pp), dis-le.
+3. Identifie les patterns intéressants (marché/ligue qui surperforme ou pas).
+4. Donne 1-2 suggestions concrètes d'amélioration ou alerte si nécessaire
    (ex: si une ligue/marché a -20% ROI sur >30 paris, suggérer de la retirer
-   de la whitelist).
+   de la whitelist ; ou si le modèle dérive, suggérer un retrain).
 
 Ton STYLE : sobre, factuel, comme un partenaire qui revoit la performance.
 Pas de surenchère ("excellent !", "fantastique !"). Pas de jargon inutile.
@@ -518,6 +632,73 @@ def _delta_color(curr: float | None, prev: float | None) -> str:
     return "#6b7280"
 
 
+def _model_perf_html(mp: dict, mp_prev: dict) -> str:
+    """Section performance prédictive du modèle (distincte du ROI des paris)."""
+    if not mp or mp.get("n", 0) == 0:
+        return """
+<h2 style="margin:24px 0 12px 0;font-size:16px;color:#111827">🎯 Performance du modèle (semaine)</h2>
+<p style="font-size:13px;color:#9ca3af;background:#f9fafb;border-radius:8px;padding:12px;margin-bottom:24px">
+Aucun match terminé avec prédiction live cette semaine — pas de mesure de performance modèle.
+</p>"""
+
+    acc = mp["accuracy"]
+    ll = mp["log_loss"]
+    brier = mp["brier_score"]
+    # Deltas vs semaine précédente (accuracy ↑ = mieux ; log-loss/brier ↓ = mieux)
+    acc_d = _delta_str(acc * 100 if acc is not None else None,
+                       mp_prev.get("accuracy") * 100 if mp_prev.get("accuracy") is not None else None, "pp")
+    acc_dc = _delta_color(acc, mp_prev.get("accuracy"))
+    ll_d = _delta_str(ll, mp_prev.get("log_loss"))
+    ll_dc = _delta_color(mp_prev.get("log_loss"), ll)  # inversé : baisse = vert
+
+    ou_line = ""
+    if mp.get("ou_n"):
+        gap = mp["ou_calib_gap"]
+        gap_color = "#059669" if abs(gap) <= 0.05 else "#f59e0b" if abs(gap) <= 0.10 else "#dc2626"
+        ou_line = f"""
+      <div style="margin-top:10px;font-size:12px;color:#374151">
+        <strong>Calibration O/U 2.5</strong> ({mp['ou_n']} matchs) :
+        prédit {mp['ou_pred_over']*100:.0f}% Over, réel {mp['ou_actual_over']*100:.0f}% Over,
+        écart <span style="color:{gap_color};font-weight:bold">{gap*100:+.1f}pp</span>
+        <span style="color:#9ca3af">(|écart| ≤ 5pp = bien calibré)</span>
+      </div>"""
+
+    return f"""
+<h2 style="margin:24px 0 12px 0;font-size:16px;color:#111827">🎯 Performance du modèle (semaine)</h2>
+<p style="font-size:12px;color:#6b7280;margin:0 0 8px 0">Qualité prédictive 1X2 sur <strong>tous</strong> les matchs joués cette semaine (pas seulement les value bets) — indépendant du ROI.</p>
+<table style="width:100%;border-collapse:collapse;background:#f5f3ff;border-radius:8px;overflow:hidden;margin-bottom:8px">
+  <tr>
+    <td style="padding:10px;text-align:center;border-right:1px solid #e5e7eb">
+      <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Accuracy 1X2</div>
+      <div style="font-weight:bold;font-size:18px;margin-top:2px">{acc*100:.1f}%</div>
+      <div style="font-size:10px;color:{acc_dc}">vs sem.-1 : {acc_d}</div>
+    </td>
+    <td style="padding:10px;text-align:center;border-right:1px solid #e5e7eb">
+      <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Log-loss</div>
+      <div style="font-weight:bold;font-size:18px;margin-top:2px">{ll}</div>
+      <div style="font-size:10px;color:{ll_dc}">vs sem.-1 : {ll_d}</div>
+    </td>
+    <td style="padding:10px;text-align:center;border-right:1px solid #e5e7eb">
+      <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Brier</div>
+      <div style="font-weight:bold;font-size:18px;margin-top:2px">{brier}</div>
+      <div style="font-size:10px;color:#9ca3af">{mp['n']} matchs</div>
+    </td>
+    <td style="padding:10px;text-align:center">
+      <div style="color:#6b7280;text-transform:uppercase;font-size:10px">Acc. par issue</div>
+      <div style="font-weight:bold;font-size:13px;margin-top:2px">
+        {_pct(mp['home_accuracy'])} / {_pct(mp['draw_accuracy'])} / {_pct(mp['away_accuracy'])}
+      </div>
+      <div style="font-size:10px;color:#9ca3af">dom / nul / ext</div>
+    </td>
+  </tr>
+</table>{ou_line}
+<div style="height:16px"></div>"""
+
+
+def _pct(v: float | None) -> str:
+    return f"{v*100:.0f}%" if v is not None else "—"
+
+
 def _build_report_html(
     week_kpis: dict,
     prev_kpis: dict,
@@ -530,6 +711,8 @@ def _build_report_html(
     per_league: list[dict] | None = None,
     advanced: dict | None = None,
     system_status: dict | None = None,
+    model_perf: dict | None = None,
+    model_perf_prev: dict | None = None,
 ) -> str:
     w = week_kpis
     p = prev_kpis
@@ -692,6 +875,9 @@ def _build_report_html(
         </table>
         """
 
+    # Section performance prédictive du modèle (semaine)
+    model_perf_html = _model_perf_html(model_perf or {}, model_perf_prev or {})
+
     # Section statut système
     status_html = ""
     if system_status:
@@ -760,6 +946,8 @@ def _build_report_html(
         </td>
       </tr>
     </table>
+
+    {model_perf_html}
 
     {ai_html}
 
@@ -902,8 +1090,16 @@ async def send_weekly_report_if_due(session: AsyncSession, redis, settings) -> b
     per_league = _breakdown_by_dimension(week_kpis["bets"], "league")
     advanced = _advanced_indicators(week_kpis["bets"])
     system_status = await _fetch_system_status(session, redis)
+
+    # Performance prédictive du modèle (semaine + semaine précédente pour le trend)
+    model_perf = await _model_perf_window(
+        session, monday_this.astimezone(timezone.utc), now.astimezone(timezone.utc))
+    model_perf_prev = await _model_perf_window(
+        session, monday_prev.astimezone(timezone.utc), monday_this.astimezone(timezone.utc))
+
     ai_analysis = await _generate_ai_analysis(
         week_kpis, prev_kpis, global_kpis, per_market, per_league, advanced,
+        model_perf=model_perf, model_perf_prev=model_perf_prev,
     )
 
     week_label = f"du {monday_this.strftime('%d/%m')} au {now.strftime('%d/%m/%Y')}"
@@ -914,6 +1110,8 @@ async def send_weekly_report_if_due(session: AsyncSession, redis, settings) -> b
         per_league=per_league,
         advanced=advanced,
         system_status=system_status,
+        model_perf=model_perf,
+        model_perf_prev=model_perf_prev,
     )
 
     roi_sign = "+" if week_kpis["roi_percent"] >= 0 else ""
