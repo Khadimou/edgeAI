@@ -293,7 +293,8 @@ async def _model_perf_window(session: AsyncSession, since: datetime, until: date
     rows = (await session.execute(text("""
         SELECT p.prob_home, p.prob_draw, p.prob_away,
                m.home_score, m.away_score,
-               p.prob_over_25, m.sport
+               p.prob_over_25, m.sport,
+               m.ah_line, p.prob_ah_home, p.prob_ah_away
         FROM matches m
         JOIN LATERAL (
             SELECT * FROM predictions
@@ -310,11 +311,28 @@ async def _model_perf_window(session: AsyncSession, since: datetime, until: date
 
     # Calibration O/U 2.5 (foot uniquement, ligne fixe 2.5)
     ou_pred, ou_actual = [], []
+    # AH : calibration (P(home couvre) prédite vs réelle) + accuracy du côté prédit.
+    # Settlement simplifié home : margin = (hs - as) + ah_line ; push (margin==0) exclu.
+    ah_pred, ah_actual, ah_correct, ah_total = [], [], 0, 0
     for r in rows:
         po, sport = r[5], r[6]
+        hs, as_ = r[3], r[4]
         if po is not None and sport != "NBA":
             ou_pred.append(float(po))
-            ou_actual.append(1.0 if (r[3] + r[4]) > 2.5 else 0.0)
+            ou_actual.append(1.0 if (hs + as_) > 2.5 else 0.0)
+
+        ahl, pah, paa = r[7], r[8], r[9]
+        if sport != "NBA" and ahl is not None and pah is not None and paa is not None:
+            margin = (hs - as_) + ahl
+            if abs(margin) < 1e-9:
+                continue  # push : exclu de la calibration AH
+            home_covered = margin > 0
+            ah_pred.append(float(pah))
+            ah_actual.append(1.0 if home_covered else 0.0)
+            ah_total += 1
+            if (pah >= paa) == home_covered:  # côté le plus probable = côté qui a couvert
+                ah_correct += 1
+
     if ou_pred:
         metrics["ou_n"] = len(ou_pred)
         metrics["ou_pred_over"] = round(sum(ou_pred) / len(ou_pred), 4)
@@ -323,6 +341,17 @@ async def _model_perf_window(session: AsyncSession, since: datetime, until: date
     else:
         metrics["ou_n"] = 0
         metrics["ou_pred_over"] = metrics["ou_actual_over"] = metrics["ou_calib_gap"] = None
+
+    if ah_total:
+        metrics["ah_n"] = ah_total
+        metrics["ah_accuracy"] = round(ah_correct / ah_total, 4)
+        metrics["ah_pred_home"] = round(sum(ah_pred) / len(ah_pred), 4)
+        metrics["ah_actual_home"] = round(sum(ah_actual) / len(ah_actual), 4)
+        metrics["ah_calib_gap"] = round(metrics["ah_pred_home"] - metrics["ah_actual_home"], 4)
+    else:
+        metrics["ah_n"] = 0
+        metrics["ah_accuracy"] = metrics["ah_pred_home"] = None
+        metrics["ah_actual_home"] = metrics["ah_calib_gap"] = None
     return metrics
 
 
@@ -486,6 +515,10 @@ BREAKDOWN PAR LIGUE
         if mp.get("ou_n"):
             ou_txt = (f"\n- Calibration O/U 2.5 : prédit {mp['ou_pred_over']*100:.0f}% Over vs "
                       f"{mp['ou_actual_over']*100:.0f}% réel (écart {mp['ou_calib_gap']*100:+.1f}pp, {mp['ou_n']} matchs)")
+        if mp.get("ah_n"):
+            ou_txt += (f"\n- Handicap asiatique : accuracy {mp['ah_accuracy']*100:.0f}%, "
+                       f"couverture home prédite {mp['ah_pred_home']*100:.0f}% vs réelle "
+                       f"{mp['ah_actual_home']*100:.0f}% (écart {mp['ah_calib_gap']*100:+.1f}pp, {mp['ah_n']} matchs, push exclu)")
         data_context += f"""
 
 PERFORMANCE PRÉDICTIVE DU MODÈLE (1X2, TOUS les matchs joués cette semaine, pas seulement les value bets)
@@ -663,6 +696,18 @@ Aucun match terminé avec prédiction live cette semaine — pas de mesure de pe
         <span style="color:#9ca3af">(|écart| ≤ 5pp = bien calibré)</span>
       </div>"""
 
+    ah_line = ""
+    if mp.get("ah_n"):
+        agap = mp["ah_calib_gap"]
+        agap_color = "#059669" if abs(agap) <= 0.05 else "#f59e0b" if abs(agap) <= 0.10 else "#dc2626"
+        ah_line = f"""
+      <div style="margin-top:8px;font-size:12px;color:#374151">
+        <strong>Handicap asiatique</strong> ({mp['ah_n']} matchs, push exclu) :
+        accuracy <span style="font-weight:bold">{mp['ah_accuracy']*100:.0f}%</span> ·
+        couverture home prédite {mp['ah_pred_home']*100:.0f}% vs réelle {mp['ah_actual_home']*100:.0f}%,
+        écart <span style="color:{agap_color};font-weight:bold">{agap*100:+.1f}pp</span>
+      </div>"""
+
     return f"""
 <h2 style="margin:24px 0 12px 0;font-size:16px;color:#111827">🎯 Performance du modèle (semaine)</h2>
 <p style="font-size:12px;color:#6b7280;margin:0 0 8px 0">Qualité prédictive 1X2 sur <strong>tous</strong> les matchs joués cette semaine (pas seulement les value bets) — indépendant du ROI.</p>
@@ -691,7 +736,7 @@ Aucun match terminé avec prédiction live cette semaine — pas de mesure de pe
       <div style="font-size:10px;color:#9ca3af">dom / nul / ext</div>
     </td>
   </tr>
-</table>{ou_line}
+</table>{ou_line}{ah_line}
 <div style="height:16px"></div>"""
 
 
