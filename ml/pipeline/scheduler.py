@@ -605,6 +605,23 @@ async def run_pipeline():
     wc_inference = _load_wc_inference()
     if wc_inference is None:
         log.info("no_wc_model_available")
+    else:
+        # Statut WC publié dans Redis pour la page admin (le backend n'a pas accès
+        # aux .joblib, montés seulement côté ml_worker).
+        gm = wc_inference.goals_model
+        try:
+            await redis.set("wc:status", json.dumps({
+                "x12_model": wc_inference.x12_version,
+                "x12_loaded": wc_inference.model is not None,
+                "goals_model_loaded": gm is not None,
+                "goals_n_teams": len(gm.attack) if gm else 0,
+                "goals_trained_through": getattr(gm, "trained_through", None) if gm else None,
+                "goals_home_adv": round(gm.home_adv, 3) if gm else None,
+                "goals_rho": round(gm.rho, 3) if gm else None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }))
+        except Exception as e:
+            log.warning("wc_status_redis_write_error", error=str(e))
 
     football_client = FootballDataClient(FOOTBALL_API_KEY)
     odds_client = OddsAPIClient(ODDS_API_KEY)

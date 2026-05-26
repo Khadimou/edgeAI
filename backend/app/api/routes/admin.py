@@ -3,6 +3,7 @@ Endpoint admin observabilité : vue d'ensemble du système.
 Pipeline ML, credits API, modèles déployés, fraîcheur des données, drift.
 """
 import json
+from math import log
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,80 @@ from app.core.redis import get_redis
 from app.db.models import User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_EPS = 1e-15
+
+
+async def _live_model_perf(db: AsyncSession, days: int = 30) -> dict:
+    """Perf prédictive live (1X2 + calibration O/U et AH) sur les matchs FINISHED
+    des `days` derniers jours. Exclut les prédictions de backfill (data leak)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+    rows = (await db.execute(text("""
+        SELECT p.prob_home, p.prob_draw, p.prob_away,
+               m.home_score, m.away_score, p.prob_over_25, m.sport,
+               m.ah_line, p.prob_ah_home, p.prob_ah_away
+        FROM matches m
+        JOIN LATERAL (
+            SELECT * FROM predictions
+            WHERE match_id = m.id AND model_version NOT LIKE 'backfill_%'
+            ORDER BY computed_at DESC LIMIT 1
+        ) p ON TRUE
+        WHERE m.status = 'FINISHED'
+          AND m.home_score IS NOT NULL AND m.away_score IS NOT NULL
+          AND m.match_date >= :since
+    """), {"since": since})).fetchall()
+
+    n = correct = 0
+    ll_sum = brier_sum = 0.0
+    ou_pred = ou_act = ou_n = 0.0
+    ah_pred = ah_act = ah_correct = ah_n = 0.0
+    for r in rows:
+        ph, pd_, pa, hs, as_, po, sport, ahl, pah, paa = r
+        if None in (ph, pd_, pa, hs, as_):
+            continue
+        n += 1
+        actual = 0 if hs > as_ else (1 if hs == as_ else 2)
+        probs = [ph, pd_, pa]
+        if max(range(3), key=lambda i: probs[i]) == actual:
+            correct += 1
+        ll_sum += -log(max(min(probs[actual], 1 - _EPS), _EPS))
+        for i in range(3):
+            brier_sum += (probs[i] - (1.0 if i == actual else 0.0)) ** 2
+        if po is not None and sport != "NBA":
+            ou_n += 1
+            ou_pred += float(po)
+            ou_act += 1.0 if (hs + as_) > 2.5 else 0.0
+        if sport != "NBA" and ahl is not None and pah is not None and paa is not None:
+            margin = (hs - as_) + ahl
+            if abs(margin) >= 1e-9:
+                ah_n += 1
+                ah_pred += float(pah)
+                ah_act += 1.0 if margin > 0 else 0.0
+                if (pah >= paa) == (margin > 0):
+                    ah_correct += 1
+    if n == 0:
+        return {"n": 0, "window_days": days}
+    out = {
+        "n": n,
+        "window_days": days,
+        "accuracy": round(correct / n, 4),
+        "log_loss": round(ll_sum / n, 4),
+        "brier_score": round(brier_sum / n, 4),
+    }
+    out["ou"] = ({
+        "n": int(ou_n),
+        "pred_over": round(ou_pred / ou_n, 4),
+        "actual_over": round(ou_act / ou_n, 4),
+        "calib_gap": round(ou_pred / ou_n - ou_act / ou_n, 4),
+    } if ou_n else {"n": 0})
+    out["ah"] = ({
+        "n": int(ah_n),
+        "accuracy": round(ah_correct / ah_n, 4),
+        "pred_home": round(ah_pred / ah_n, 4),
+        "actual_home": round(ah_act / ah_n, 4),
+        "calib_gap": round(ah_pred / ah_n - ah_act / ah_n, 4),
+    } if ah_n else {"n": 0})
+    return out
 
 
 @router.get("/observability")
@@ -117,6 +192,51 @@ async def get_observability(
         "last_update": row[4].isoformat() if row[4] else None,
     }
 
+    # ─── Couverture cotes Coupe du Monde (foot, league='World Cup') ──
+    r = await db.execute(text("""
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN home_odds IS NOT NULL THEN 1 ELSE 0 END) AS with_h2h,
+               SUM(CASE WHEN ah_line IS NOT NULL THEN 1 ELSE 0 END) AS with_ah,
+               (SELECT COUNT(*) FROM predictions p JOIN matches mm ON mm.id=p.match_id
+                  WHERE mm.league='World Cup' AND mm.status='SCHEDULED') AS preds
+        FROM matches
+        WHERE league='World Cup' AND status='SCHEDULED'
+    """))
+    row = r.fetchone()
+    wc_freshness = {
+        "scheduled_matches": row[0] or 0,
+        "with_h2h_odds": row[1] or 0,
+        "with_ah_odds": row[2] or 0,
+        "predictions": row[3] or 0,
+    }
+
+    # ─── Couverture cotes NBA (totals) ───────────────────────────
+    r = await db.execute(text("""
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN home_odds IS NOT NULL THEN 1 ELSE 0 END) AS with_ml,
+               SUM(CASE WHEN over_25_odds IS NOT NULL AND nba_total_line IS NOT NULL THEN 1 ELSE 0 END) AS with_totals
+        FROM matches
+        WHERE sport='NBA' AND status='SCHEDULED'
+    """))
+    row = r.fetchone()
+    nba_freshness = {
+        "scheduled_matches": row[0] or 0,
+        "with_moneyline_odds": row[1] or 0,
+        "with_totals_odds": row[2] or 0,
+    }
+
+    # ─── Statut modèles WC (publié par le ml_worker dans Redis) ──
+    wc_status = None
+    try:
+        raw = await redis.get("wc:status")
+        if raw:
+            wc_status = json.loads(raw)
+    except Exception:
+        pass
+
+    # ─── Perf prédictive live (1X2 + O/U + AH, 30j) ──────────────
+    live_perf = await _live_model_perf(db, days=30)
+
     # ─── Drift global (modèle 1X2 actuel) ────────────────────────
     r = await db.execute(text("""
         SELECT version, accuracy, log_loss FROM model_versions
@@ -152,12 +272,17 @@ async def get_observability(
 
     return {
         "computed_at": datetime.now(timezone.utc).isoformat(),
+        "environment": settings.environment,
         "db_stats": db_stats,
         "deployed_models": deployed_models,
         "standings_cache": standings_cache,
         "locks": locks,
         "odds_api_remaining": int(odds_credits) if odds_credits else None,
         "foot_freshness": foot_freshness,
+        "wc_freshness": wc_freshness,
+        "nba_freshness": nba_freshness,
+        "wc_status": wc_status,
+        "live_perf": live_perf,
         "drift": drift,
         "whitelists": whitelists,
     }

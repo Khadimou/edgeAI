@@ -25,6 +25,7 @@ class WCInference:
 
     def __init__(self, model_bundle: dict, csv_path: Path, goals_model=None):
         self.model = model_bundle.get("model")
+        self.x12_version = model_bundle.get("version")  # version du modèle XGBoost 1X2
         self.goals_model = goals_model  # WCGoalsModel | None
         self.csv_path = csv_path
         self.df: pd.DataFrame | None = None

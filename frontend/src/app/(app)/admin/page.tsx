@@ -12,6 +12,37 @@ import { cn } from "@/lib/utils";
 
 interface ObservabilityData {
   computed_at: string;
+  environment?: string;
+  wc_freshness?: {
+    scheduled_matches: number;
+    with_h2h_odds: number;
+    with_ah_odds: number;
+    predictions: number;
+  };
+  nba_freshness?: {
+    scheduled_matches: number;
+    with_moneyline_odds: number;
+    with_totals_odds: number;
+  };
+  wc_status?: {
+    x12_model: string | null;
+    x12_loaded: boolean;
+    goals_model_loaded: boolean;
+    goals_n_teams: number;
+    goals_trained_through: string | null;
+    goals_home_adv: number | null;
+    goals_rho: number | null;
+    updated_at: string;
+  } | null;
+  live_perf?: {
+    n: number;
+    window_days: number;
+    accuracy?: number;
+    log_loss?: number;
+    brier_score?: number;
+    ou?: { n: number; pred_over?: number; actual_over?: number; calib_gap?: number };
+    ah?: { n: number; accuracy?: number; pred_home?: number; actual_home?: number; calib_gap?: number };
+  };
   db_stats: {
     matches_total: number;
     matches_breakdown: Array<{ sport: string; status: string; count: number }>;
@@ -133,17 +164,48 @@ export default function AdminPage() {
         </button>
       </div>
 
-      {/* Bandeau autonomie */}
-      <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
-        <div className="text-sm">
-          <p className="font-semibold text-yellow-300">Pipeline non-autonome</p>
-          <p className="text-gray-300 mt-1">
-            Le système tourne en local via Docker. Si tu éteins l'ordi, les pipelines (predictions, odds, settlement, retrain) s'arrêtent.
-            Pour autonomie 24/7 : déployer sur Railway/Render/Hetzner (~5-15€/mois).
-          </p>
-        </div>
-      </div>
+      {/* Bandeau santé pipeline */}
+      {(() => {
+        const isProd = data.environment === "production";
+        const lastPred = data.db_stats.last_prediction_at;
+        const hoursSince = lastPred ? (Date.now() - new Date(lastPred).getTime()) / 3_600_000 : null;
+        // Pipeline tourne en cycle 6h → sain si < 8h, alerte sinon.
+        const stale = hoursSince === null || hoursSince > 8;
+        const healthy = isProd && !stale;
+        const cls = healthy
+          ? "border-green-500/30 bg-green-500/10"
+          : isProd
+            ? "border-yellow-500/30 bg-yellow-500/10"
+            : "border-yellow-500/30 bg-yellow-500/10";
+        return (
+          <div className={cn("rounded-xl border p-4 flex items-start gap-3", cls)}>
+            {healthy
+              ? <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
+              : <AlertTriangle className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />}
+            <div className="text-sm">
+              {isProd ? (
+                <>
+                  <p className={cn("font-semibold", healthy ? "text-green-300" : "text-yellow-300")}>
+                    {healthy ? "Pipeline 24/7 actif (Hetzner)" : "Pipeline en prod — cycle en retard"}
+                  </p>
+                  <p className="text-gray-300 mt-1">
+                    Déployé sur VPS Hetzner, cycle toutes les 6h. Dernière prédiction {timeAgo(lastPred)}.
+                    {stale && " ⚠ Aucune prédiction depuis >8h — vérifier les logs du ml_worker."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-semibold text-yellow-300">Environnement de développement</p>
+                  <p className="text-gray-300 mt-1">
+                    ENVIRONMENT ≠ production. Le pipeline tourne en local — il s'arrête si la machine s'éteint.
+                    Dernière prédiction {timeAgo(lastPred)}.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Credits API + Cache */}
       <Card>
@@ -226,6 +288,140 @@ export default function AdminPage() {
           />
         </div>
       </Card>
+
+      {/* Couverture Coupe du Monde + NBA */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card>
+          <h2 className="text-sm font-semibold mb-4 text-gray-300 flex items-center gap-2">
+            <Trophy className="w-4 h-4" />
+            Coupe du Monde (scheduled)
+          </h2>
+          {data.wc_freshness && data.wc_freshness.scheduled_matches > 0 ? (
+            <div className="grid grid-cols-2 gap-3">
+              <MetricBox label="Matchs SCHEDULED" value={`${data.wc_freshness.scheduled_matches}`} />
+              <MetricBox label="Prédictions" value={`${data.wc_freshness.predictions}`} accent="good" />
+              <MetricBox
+                label="Cotes 1X2"
+                value={`${data.wc_freshness.with_h2h_odds}`}
+                sub={`${Math.round(100 * data.wc_freshness.with_h2h_odds / data.wc_freshness.scheduled_matches)}%`}
+              />
+              <MetricBox
+                label="Cotes AH"
+                value={`${data.wc_freshness.with_ah_odds}`}
+                sub={`${Math.round(100 * data.wc_freshness.with_ah_odds / data.wc_freshness.scheduled_matches)}%`}
+              />
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Aucun match WC programmé (compétition inactive — démarre le 11/06).</p>
+          )}
+        </Card>
+
+        <Card>
+          <h2 className="text-sm font-semibold mb-4 text-gray-300 flex items-center gap-2">
+            <Database className="w-4 h-4" />
+            NBA (scheduled)
+          </h2>
+          {data.nba_freshness && data.nba_freshness.scheduled_matches > 0 ? (
+            <div className="grid grid-cols-3 gap-3">
+              <MetricBox label="Matchs" value={`${data.nba_freshness.scheduled_matches}`} />
+              <MetricBox
+                label="Moneyline"
+                value={`${data.nba_freshness.with_moneyline_odds}`}
+                sub={`${Math.round(100 * data.nba_freshness.with_moneyline_odds / data.nba_freshness.scheduled_matches)}%`}
+              />
+              <MetricBox
+                label="Totals"
+                value={`${data.nba_freshness.with_totals_odds}`}
+                sub={`${Math.round(100 * data.nba_freshness.with_totals_odds / data.nba_freshness.scheduled_matches)}%`}
+              />
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Aucun match NBA programmé.</p>
+          )}
+        </Card>
+      </div>
+
+      {/* Statut modèles Coupe du Monde */}
+      <Card>
+        <h2 className="text-sm font-semibold mb-4 text-gray-300 flex items-center gap-2">
+          <Trophy className="w-4 h-4" />
+          Modèles Coupe du Monde
+        </h2>
+        {data.wc_status ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <MetricBox
+              label="1X2 (XGBoost)"
+              value={data.wc_status.x12_loaded ? "chargé" : "absent"}
+              sub={data.wc_status.x12_model ?? "—"}
+              accent={data.wc_status.x12_loaded ? "good" : "bad"}
+            />
+            <MetricBox
+              label="Buts (Dixon-Coles)"
+              value={data.wc_status.goals_model_loaded ? "chargé" : "absent"}
+              sub={data.wc_status.goals_model_loaded ? `${data.wc_status.goals_n_teams} équipes` : "AH/O-U indispo"}
+              accent={data.wc_status.goals_model_loaded ? "good" : "bad"}
+            />
+            <MetricBox
+              label="Paramètres DC"
+              value={data.wc_status.goals_home_adv !== null ? `γ=${data.wc_status.goals_home_adv}` : "—"}
+              sub={data.wc_status.goals_rho !== null ? `ρ=${data.wc_status.goals_rho}` : ""}
+            />
+            <MetricBox
+              label="Données jusqu'à"
+              value={data.wc_status.goals_trained_through ?? "—"}
+              sub={`maj ${timeAgo(data.wc_status.updated_at)}`}
+            />
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
+            Statut WC indisponible — le ml_worker n'a pas encore publié (ou modèle non chargé).
+          </p>
+        )}
+      </Card>
+
+      {/* Perf prédictive live */}
+      {data.live_perf && data.live_perf.n > 0 && (
+        <Card>
+          <h2 className="text-sm font-semibold mb-1 text-gray-300 flex items-center gap-2">
+            <Brain className="w-4 h-4" />
+            Performance live du modèle ({data.live_perf.window_days}j)
+          </h2>
+          <p className="text-xs text-gray-500 mb-4">
+            Qualité prédictive sur {data.live_perf.n} matchs joués — indépendant du ROI. Backfill exclu.
+          </p>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <MetricBox label="Accuracy 1X2" value={`${((data.live_perf.accuracy ?? 0) * 100).toFixed(1)}%`} />
+            <MetricBox label="Log-loss" value={`${data.live_perf.log_loss}`} sub="bas = mieux" />
+            <MetricBox label="Brier" value={`${data.live_perf.brier_score}`} sub="bas = mieux" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {data.live_perf.ou && data.live_perf.ou.n > 0 && (
+              <div className="bg-gray-800/40 rounded-lg p-3 text-xs">
+                <p className="text-gray-500 mb-1">Calibration O/U 2.5 ({data.live_perf.ou.n})</p>
+                <p>
+                  prédit {((data.live_perf.ou.pred_over ?? 0) * 100).toFixed(0)}% vs réel{" "}
+                  {((data.live_perf.ou.actual_over ?? 0) * 100).toFixed(0)}% —{" "}
+                  <span className={cn("font-bold", Math.abs(data.live_perf.ou.calib_gap ?? 0) <= 0.05 ? "text-green-400" : Math.abs(data.live_perf.ou.calib_gap ?? 0) <= 0.10 ? "text-yellow-400" : "text-red-400")}>
+                    écart {((data.live_perf.ou.calib_gap ?? 0) * 100 >= 0 ? "+" : "")}{((data.live_perf.ou.calib_gap ?? 0) * 100).toFixed(1)}pp
+                  </span>
+                </p>
+              </div>
+            )}
+            {data.live_perf.ah && data.live_perf.ah.n > 0 && (
+              <div className="bg-gray-800/40 rounded-lg p-3 text-xs">
+                <p className="text-gray-500 mb-1">Asian Handicap ({data.live_perf.ah.n}, push exclu)</p>
+                <p>
+                  accuracy <span className="font-bold">{((data.live_perf.ah.accuracy ?? 0) * 100).toFixed(0)}%</span> · couv. home prédite{" "}
+                  {((data.live_perf.ah.pred_home ?? 0) * 100).toFixed(0)}% vs réelle {((data.live_perf.ah.actual_home ?? 0) * 100).toFixed(0)}% —{" "}
+                  <span className={cn("font-bold", Math.abs(data.live_perf.ah.calib_gap ?? 0) <= 0.05 ? "text-green-400" : Math.abs(data.live_perf.ah.calib_gap ?? 0) <= 0.10 ? "text-yellow-400" : "text-red-400")}>
+                    écart {((data.live_perf.ah.calib_gap ?? 0) * 100 >= 0 ? "+" : "")}{((data.live_perf.ah.calib_gap ?? 0) * 100).toFixed(1)}pp
+                  </span>
+                </p>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* DB stats */}
       <Card>
