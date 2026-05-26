@@ -729,6 +729,14 @@ async def run_pipeline():
                         log.info("weekly_report_done")
                 except Exception as e:
                     log.error("weekly_report_error", error=str(e))
+
+        # Heartbeat de fin de cycle : indépendant des prédictions générées (en fin
+        # de saison il peut n'y avoir aucun match à prédire → pas de nouvelle
+        # prédiction, mais le pipeline a bien tourné). Lu par la page admin.
+        try:
+            await redis.set("pipeline:last_run", datetime.now(timezone.utc).isoformat())
+        except Exception as e:
+            log.warning("pipeline_heartbeat_error", error=str(e))
     finally:
         await football_client.close()
         await odds_client.close()

@@ -234,6 +234,15 @@ async def get_observability(
     except Exception:
         pass
 
+    # ─── Heartbeat pipeline (fin de cycle, indépendant des prédictions) ──
+    pipeline_last_run = None
+    try:
+        raw = await redis.get("pipeline:last_run")
+        if raw:
+            pipeline_last_run = raw.decode() if isinstance(raw, bytes) else raw
+    except Exception:
+        pass
+
     # ─── Perf prédictive live (1X2 + O/U + AH, 30j) ──────────────
     live_perf = await _live_model_perf(db, days=30)
 
@@ -273,6 +282,7 @@ async def get_observability(
     return {
         "computed_at": datetime.now(timezone.utc).isoformat(),
         "environment": settings.environment,
+        "pipeline_last_run": pipeline_last_run,
         "db_stats": db_stats,
         "deployed_models": deployed_models,
         "standings_cache": standings_cache,

@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 interface ObservabilityData {
   computed_at: string;
   environment?: string;
+  pipeline_last_run?: string | null;
   wc_freshness?: {
     scheduled_matches: number;
     with_h2h_odds: number;
@@ -167,16 +168,16 @@ export default function AdminPage() {
       {/* Bandeau santé pipeline */}
       {(() => {
         const isProd = data.environment === "production";
+        // Santé = le pipeline a tourné récemment (heartbeat), PAS "des prédictions
+        // ont été générées" : en fin de saison il peut n'y avoir aucun match à prédire.
+        const lastRun = data.pipeline_last_run ?? null;
         const lastPred = data.db_stats.last_prediction_at;
-        const hoursSince = lastPred ? (Date.now() - new Date(lastPred).getTime()) / 3_600_000 : null;
-        // Pipeline tourne en cycle 6h → sain si < 8h, alerte sinon.
-        const stale = hoursSince === null || hoursSince > 8;
-        const healthy = isProd && !stale;
-        const cls = healthy
-          ? "border-green-500/30 bg-green-500/10"
-          : isProd
-            ? "border-yellow-500/30 bg-yellow-500/10"
-            : "border-yellow-500/30 bg-yellow-500/10";
+        const hoursSince = lastRun ? (Date.now() - new Date(lastRun).getTime()) / 3_600_000 : null;
+        // Cycle 6h → sain si dernier run < 8h. Si pas de heartbeat (déploiement récent), neutre.
+        const noHeartbeat = lastRun === null;
+        const stale = hoursSince !== null && hoursSince > 8;
+        const healthy = isProd && !stale && !noHeartbeat;
+        const cls = healthy ? "border-green-500/30 bg-green-500/10" : "border-yellow-500/30 bg-yellow-500/10";
         return (
           <div className={cn("rounded-xl border p-4 flex items-start gap-3", cls)}>
             {healthy
@@ -186,11 +187,14 @@ export default function AdminPage() {
               {isProd ? (
                 <>
                   <p className={cn("font-semibold", healthy ? "text-green-300" : "text-yellow-300")}>
-                    {healthy ? "Pipeline 24/7 actif (Hetzner)" : "Pipeline en prod — cycle en retard"}
+                    {healthy ? "Pipeline 24/7 actif (Hetzner)"
+                      : noHeartbeat ? "Pipeline — heartbeat en attente"
+                      : "Pipeline en prod — cycle en retard"}
                   </p>
                   <p className="text-gray-300 mt-1">
-                    Déployé sur VPS Hetzner, cycle toutes les 6h. Dernière prédiction {timeAgo(lastPred)}.
-                    {stale && " ⚠ Aucune prédiction depuis >8h — vérifier les logs du ml_worker."}
+                    Déployé sur VPS Hetzner, cycle toutes les 6h. Dernier run {timeAgo(lastRun)} · dernière prédiction {timeAgo(lastPred)}.
+                    {noHeartbeat && " (Le heartbeat apparaîtra au prochain cycle après déploiement.)"}
+                    {stale && " ⚠ Aucun run depuis >8h — vérifier les logs du ml_worker."}
                   </p>
                 </>
               ) : (
@@ -198,7 +202,7 @@ export default function AdminPage() {
                   <p className="font-semibold text-yellow-300">Environnement de développement</p>
                   <p className="text-gray-300 mt-1">
                     ENVIRONMENT ≠ production. Le pipeline tourne en local — il s'arrête si la machine s'éteint.
-                    Dernière prédiction {timeAgo(lastPred)}.
+                    Dernier run {timeAgo(lastRun)} · dernière prédiction {timeAgo(lastPred)}.
                   </p>
                 </>
               )}
