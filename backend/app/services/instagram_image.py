@@ -12,12 +12,14 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ─── Palette ──────────────────────────────────────────────────────────
-BG_TL        = (36, 0, 70)
-BG_BR        = (255, 20, 130)
+# Fond sombre uniforme (deep night purple) pour contraste max avec texte blanc.
+# Le gradient garde une identité violet → indigo mais reste assez sombre partout.
+BG_TL        = (10, 4, 40)        # near-black violet (top-left)
+BG_BR        = (60, 20, 110)      # rich indigo-purple (bottom-right)
 WHITE        = (255, 255, 255)
-COTE_INK     = (74, 0, 110)
+COTE_INK     = (45, 10, 95)       # cote text on white badge (sombre + saturé)
 ACCENT_GOLD  = (255, 215, 0)
-TEXT_DIM     = (235, 220, 245)
+TEXT_DIM     = (210, 200, 240)    # blanc cassé lavande pour secondaires
 
 SIZE = (1080, 1080)
 STATIC_DIR = Path(__file__).parent.parent / "static" / "instagram"
