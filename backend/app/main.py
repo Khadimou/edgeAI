@@ -83,10 +83,12 @@ app.include_router(admin.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(instagram.router, prefix="/api/v1")
 
-# Sert les images générées (nécessaire pour l'URL publique Instagram)
+# Sert les images générées (nécessaire pour l'URL publique Instagram).
+# Monté sous /api/v1/static car nginx route /api/* vers le backend ; /static au
+# root tombait sur le frontend Next.js → 404 quand Meta fetchait l'image.
 _static_dir = Path(__file__).parent / "static"
 _static_dir.mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+app.mount("/api/v1/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/health")

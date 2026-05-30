@@ -24,7 +24,9 @@ router = APIRouter(prefix="/instagram", tags=["instagram"])
 
 def _image_public_url(filename: str) -> str:
     base = (settings.api_base_url or "").rstrip("/")
-    return f"{base}/static/instagram/{filename}"
+    # /api/v1/static = chemin servi par le backend (nginx route /api/* → backend).
+    # /static au root tombait sur le frontend Next.js (404 côté Meta).
+    return f"{base}/api/v1/static/instagram/{filename}"
 
 
 @router.get("/status")
