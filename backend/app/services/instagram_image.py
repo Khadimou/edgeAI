@@ -1,6 +1,6 @@
 """
-Image Instagram 1080×1080 pour un value bet — style vibrant IG.
-Gradient diagonal violet→rose vif, badge circulaire pour la cote, zéro jargon.
+Image Instagram 1080×1080 pour un value bet — vibrant IG, logos des clubs.
+Gradient diagonal violet→rose vif, logos club proéminents, badge cote circulaire.
 """
 from __future__ import annotations
 import os
@@ -8,21 +8,20 @@ import random
 import uuid
 from datetime import datetime
 from pathlib import Path
+
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ─── Palette ──────────────────────────────────────────────────────────
-BG_TL        = (36, 0, 70)        # deep violet (top-left)
-BG_BR        = (255, 20, 130)     # vivid pink (bottom-right)
+BG_TL        = (36, 0, 70)
+BG_BR        = (255, 20, 130)
 WHITE        = (255, 255, 255)
-COTE_INK     = (74, 0, 110)       # texte cote sur badge blanc
-PICK_INK     = (255, 255, 255)    # blanc pur
+COTE_INK     = (74, 0, 110)
 ACCENT_GOLD  = (255, 215, 0)
-TEXT_SOFT    = (255, 255, 255)
-TEXT_DIM     = (235, 220, 245)    # blanc cassé violacé pour secondaires
-DIM_OVERLAY  = (0, 0, 0, 90)      # voile noir transparent pour lisibilité
+TEXT_DIM     = (235, 220, 245)
 
 SIZE = (1080, 1080)
 STATIC_DIR = Path(__file__).parent.parent / "static" / "instagram"
+LOGO_CACHE_DIR = Path(__file__).parent.parent / "static" / "logos"
 
 OUTCOME_LABELS = {
     "HOME":    "Victoire {home}",
@@ -33,6 +32,59 @@ OUTCOME_LABELS = {
     "AH_HOME": "{home} avec handicap",
     "AH_AWAY": "{away} avec handicap",
 }
+
+# ─── Mapping clubs → ID football-data.org pour les crests ───
+# CDN stable : https://crests.football-data.org/{id}.png
+KNOWN_CRESTS = {
+    # Premier League
+    "arsenal": 57, "arsenal fc": 57,
+    "manchester city": 65, "manchester city fc": 65, "man city": 65,
+    "manchester united": 66, "manchester united fc": 66, "man united": 66, "manchester utd": 66,
+    "liverpool": 64, "liverpool fc": 64,
+    "chelsea": 61, "chelsea fc": 61,
+    "tottenham": 73, "tottenham hotspur": 73, "tottenham hotspur fc": 73, "spurs": 73,
+    "newcastle": 67, "newcastle united": 67,
+    "aston villa": 58, "aston villa fc": 58,
+    "west ham": 563, "west ham united": 563,
+    # La Liga
+    "real madrid": 86, "real madrid cf": 86,
+    "barcelona": 81, "fc barcelona": 81, "fc barcelone": 81,
+    "atletico madrid": 78, "atlético madrid": 78, "atlético de madrid": 78,
+    "atletico de madrid": 78, "club atlético de madrid": 78,
+    "sevilla": 559, "sevilla fc": 559,
+    "real betis": 90, "real betis balompié": 90,
+    "valencia": 95, "valencia cf": 95,
+    "real sociedad": 92,
+    "villarreal": 94, "villarreal cf": 94,
+    "athletic club": 77, "athletic bilbao": 77,
+    # Bundesliga
+    "bayern munich": 5, "bayern": 5, "bayern münchen": 5, "fc bayern münchen": 5, "fc bayern": 5,
+    "borussia dortmund": 4, "bvb": 4, "dortmund": 4,
+    "rb leipzig": 721, "leipzig": 721,
+    "bayer leverkusen": 3, "leverkusen": 3,
+    "eintracht frankfurt": 19,
+    "stuttgart": 10, "vfb stuttgart": 10,
+    # Serie A
+    "juventus": 109, "juventus fc": 109, "juve": 109,
+    "ac milan": 98, "milan": 98,
+    "inter": 108, "inter milan": 108, "internazionale": 108,
+    "napoli": 113, "ssc napoli": 113,
+    "roma": 100, "as roma": 100,
+    "lazio": 110, "ss lazio": 110,
+    "atalanta": 102, "atalanta bc": 102,
+    "fiorentina": 99, "acf fiorentina": 99,
+    # Ligue 1
+    "paris saint germain": 524, "paris saint-germain": 524,
+    "paris saint germain fc": 524, "paris saint-germain fc": 524, "psg": 524,
+    "olympique marseille": 516, "marseille": 516, "om": 516, "olympique de marseille": 516,
+    "olympique lyonnais": 523, "lyon": 523, "ol": 523,
+    "as monaco": 548, "monaco": 548, "as monaco fc": 548,
+    "lille": 521, "losc lille": 521, "lille osc": 521,
+    "rennes": 7819, "stade rennais": 7819, "stade rennais fc 1901": 7819,
+    "nice": 522, "ogc nice": 522,
+}
+
+CREST_URL = "https://crests.football-data.org/{id}.png"
 
 _FONT_BOLD_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -67,8 +119,59 @@ def _center(draw, text, y, font, color=WHITE, width=SIZE[0]):
     draw.text((x, y), text, fill=color, font=font)
 
 
-def _wrap_team_name(name: str, max_chars: int = 14) -> list[str]:
-    """Découpe sur 1 ou 2 lignes pour les noms longs."""
+# ─── Logos clubs (cache local, fetch football-data.org) ──────────────
+
+def _find_team_id(team_name: str) -> int | None:
+    name = team_name.strip().lower()
+    # Exact match
+    if name in KNOWN_CRESTS:
+        return KNOWN_CRESTS[name]
+    # Match partiel (alias inclus dans nom long ou inverse)
+    for k, v in KNOWN_CRESTS.items():
+        if k in name or name in k:
+            return v
+    return None
+
+
+def _get_team_logo(team_name: str, max_size: int = 220) -> Image.Image | None:
+    """Renvoie le logo redimensionné en RGBA, ou None si introuvable."""
+    fd_id = _find_team_id(team_name)
+    if fd_id is None:
+        return None
+    LOGO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = LOGO_CACHE_DIR / f"{fd_id}.png"
+    if not cache.exists():
+        try:
+            import httpx  # lazy : disponible dans le conteneur backend, optionnel en local
+            r = httpx.get(CREST_URL.format(id=fd_id), timeout=10, follow_redirects=True)
+            if r.status_code != 200 or len(r.content) < 100:
+                return None
+            cache.write_bytes(r.content)
+        except Exception:
+            return None
+    try:
+        logo = Image.open(cache).convert("RGBA")
+        logo.thumbnail((max_size, max_size), Image.LANCZOS)
+        return logo
+    except Exception:
+        return None
+
+
+def _team_initials_badge(team_name: str, size: int = 200) -> Image.Image:
+    """Fallback : cercle blanc avec les initiales de l'équipe."""
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([0, 0, size, size], fill=(255, 255, 255, 230))
+    words = team_name.split()
+    initials = "".join(w[0].upper() for w in words[:2]) if words else "?"
+    f = _font(int(size * 0.4), bold=True)
+    tw = _text_w(d, initials, f)
+    d.text(((size - tw) // 2, size // 2 - int(size * 0.28)),
+           initials, fill=COTE_INK, font=f)
+    return img
+
+
+def _wrap_team_name(name: str, max_chars: int = 13) -> list[str]:
     if len(name) <= max_chars:
         return [name]
     words = name.split()
@@ -81,19 +184,15 @@ def _wrap_team_name(name: str, max_chars: int = 14) -> list[str]:
 # ─── Background gradient diagonal ────────────────────────────────────
 
 def _diagonal_gradient(size: tuple[int, int], c1: tuple, c2: tuple) -> Image.Image:
-    """Gradient diagonal (top-left c1 → bottom-right c2) via rotation d'un strip vertical."""
     w, h = size
-    # Diagonale + marge
     diag = int(((w * w + h * h) ** 0.5)) + 20
-    # Strip 1 px de large, hauteur diagonale
     strip = Image.new("RGB", (1, diag))
     for y in range(diag):
         t = y / max(1, diag - 1)
-        r = int(c1[0] * (1 - t) + c2[0] * t)
-        g = int(c1[1] * (1 - t) + c2[1] * t)
-        b = int(c1[2] * (1 - t) + c2[2] * t)
-        strip.putpixel((0, y), (r, g, b))
-    # Étire en largeur, puis tourne -45° pour diagonal, puis crop au centre
+        strip.putpixel((0, y),
+                       (int(c1[0] * (1 - t) + c2[0] * t),
+                        int(c1[1] * (1 - t) + c2[1] * t),
+                        int(c1[2] * (1 - t) + c2[2] * t)))
     big = strip.resize((diag, diag))
     rotated = big.rotate(-45, resample=Image.BILINEAR, expand=False)
     left = (rotated.width - w) // 2
@@ -101,14 +200,12 @@ def _diagonal_gradient(size: tuple[int, int], c1: tuple, c2: tuple) -> Image.Ima
     return rotated.crop((left, top, left + w, top + h))
 
 
-def _dots_overlay(size: tuple[int, int], count: int = 60, alpha: int = 28) -> Image.Image:
-    """Petits points blancs semi-transparents pour texture (random fixed seed)."""
+def _dots_overlay(size, count=80, alpha=22) -> Image.Image:
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     rng = random.Random(42)
     for _ in range(count):
-        x = rng.randint(0, size[0])
-        y = rng.randint(0, size[1])
+        x = rng.randint(0, size[0]); y = rng.randint(0, size[1])
         r = rng.choice([3, 4, 5, 6, 8])
         draw.ellipse([x - r, y - r, x + r, y + r],
                      fill=(255, 255, 255, alpha))
@@ -133,63 +230,30 @@ def _format_date(match_date) -> str:
         return str(match_date)[:16]
 
 
-# ─── Composants visuels ──────────────────────────────────────────────
-
-def _pill(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font,
-          fg=WHITE, bg=DIM_OVERLAY, pad_x: int = 28, pad_y: int = 14) -> tuple[int, int]:
-    """Pill arrondi avec texte centré. Retourne (largeur, hauteur)."""
-    tw = _text_w(draw, text, font)
-    th = font.size
-    w = tw + 2 * pad_x
-    h = th + 2 * pad_y
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=bg)
-    draw.text((x + pad_x, y + pad_y - 3), text, fill=fg, font=font)
-    return w, h
-
-
 def _circle_badge(img: Image.Image, cx: int, cy: int, r: int,
-                  text: str, font, text_color=COTE_INK) -> None:
-    """Badge circulaire blanc avec ombre/lueur et texte centré."""
-    # Lueur extérieure (cercle plus grand, blanc translucide, flou)
+                  text: str, font, text_color=COTE_INK):
     glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse([cx - r - 30, cy - r - 30, cx + r + 30, cy + r + 30],
-               fill=(255, 255, 255, 90))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=20))
-    img.alpha_composite(glow)
-
-    # Ombre portée (cercle noir flou décalé)
+    ImageDraw.Draw(glow).ellipse([cx - r - 35, cy - r - 35, cx + r + 35, cy + r + 35],
+                                  fill=(255, 255, 255, 100))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(radius=22)))
     shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse([cx - r + 8, cy - r + 14, cx + r + 8, cy + r + 14],
-               fill=(0, 0, 0, 130))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=12))
-    img.alpha_composite(shadow)
-
-    # Badge blanc
+    ImageDraw.Draw(shadow).ellipse([cx - r + 8, cy - r + 14, cx + r + 8, cy + r + 14],
+                                    fill=(0, 0, 0, 140))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(radius=14)))
     badge = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    bd = ImageDraw.Draw(badge)
-    bd.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 255, 255, 255))
+    ImageDraw.Draw(badge).ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 255, 255, 255))
     img.alpha_composite(badge)
-
-    # Texte centré
-    final_draw = ImageDraw.Draw(img)
-    tw = _text_w(final_draw, text, font)
-    th = font.size
-    final_draw.text((cx - tw // 2, cy - th // 2 - 8), text,
-                    fill=text_color, font=font)
+    d = ImageDraw.Draw(img)
+    tw = _text_w(d, text, font)
+    d.text((cx - tw // 2, cy - font.size // 2 - 12), text, fill=text_color, font=font)
 
 
-def _arrow_chevron(draw: ImageDraw.ImageDraw, x: int, y: int, size: int = 36,
-                   color=WHITE) -> int:
-    """Dessine 2 chevrons ▶▶ pointant à droite. Retourne la largeur dessinée."""
+def _arrow_chevron(draw, x, y, size=50, color=WHITE):
     s = size
     spacing = s // 3
     for i in range(2):
         ox = x + i * (s // 2 + spacing)
-        poly = [(ox, y), (ox + s // 2, y + s // 2), (ox, y + s)]
-        draw.polygon(poly, fill=color)
-    return s + spacing + 2
+        draw.polygon([(ox, y), (ox + s // 2, y + s // 2), (ox, y + s)], fill=color)
 
 
 # ─── Génération principale ──────────────────────────────────────────
@@ -197,143 +261,139 @@ def _arrow_chevron(draw: ImageDraw.ImageDraw, x: int, y: int, size: int = 36,
 def generate_value_bet_image(bet: dict) -> Path:
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) Fond : gradient diagonal en RGB
+    # 1) Fond gradient diagonal + texture
     bg = _diagonal_gradient(SIZE, BG_TL, BG_BR)
-    # On passe en RGBA pour pouvoir composer des layers
     img = bg.convert("RGBA")
-
-    # 2) Texture : dots semi-transparents
     img.alpha_composite(_dots_overlay(SIZE, count=80, alpha=22))
 
-    # 3) Voile sombre subtil top + bottom pour lisibilité texte
+    # 2) Voiles top/bottom pour lisibilité
     veil = Image.new("RGBA", SIZE, (0, 0, 0, 0))
     vd = ImageDraw.Draw(veil)
-    vd.rectangle([0, 0, SIZE[0], 100], fill=(0, 0, 0, 70))           # bandeau top
-    vd.rectangle([0, SIZE[1] - 70, SIZE[0], SIZE[1]], fill=(0, 0, 0, 80))  # bandeau bottom
+    vd.rectangle([0, 0, SIZE[0], 110], fill=(0, 0, 0, 80))
+    vd.rectangle([0, SIZE[1] - 70, SIZE[0], SIZE[1]], fill=(0, 0, 0, 90))
     img.alpha_composite(veil)
-
     d = ImageDraw.Draw(img)
 
-    # ─── Polices ───
-    f_brand   = _font(40, bold=True)
-    f_league  = _font(26, bold=True)
-    f_date    = _font(28, bold=False)
-    f_team    = _font(70, bold=True)
-    f_team_sm = _font(54, bold=True)
-    f_vs      = _font(36, bold=True)
-    f_pick_lbl= _font(24, bold=False)
-    f_pick    = _font(48, bold=True)
-    f_cote    = _font(118, bold=True)
-    f_ex_big  = _font(64, bold=True)
-    f_ex_lbl  = _font(26, bold=False)
-    f_sub     = _font(26, bold=False)
-    f_footer  = _font(22, bold=False)
+    # ─── Polices (plus grosses) ───
+    f_brand    = _font(46, bold=True)
+    f_league   = _font(32, bold=True)
+    f_date     = _font(32, bold=False)
+    f_team     = _font(62, bold=True)
+    f_team_sm  = _font(48, bold=True)
+    f_vs       = _font(44, bold=True)
+    f_pick_lbl = _font(30, bold=False)
+    f_pick     = _font(58, bold=True)
+    f_cote     = _font(96, bold=True)
+    f_ex_big   = _font(76, bold=True)
+    f_ex_lbl   = _font(30, bold=False)
+    f_sub      = _font(32, bold=False)
+    f_footer   = _font(26, bold=False)
+
+    cxc = SIZE[0] // 2
 
     # ─── 1. Brand top ───
-    _center(d, "@edgebetfr", 30, f_brand, WHITE)
-    # petit underline sous le handle (3 dots horizontaux)
-    cxc = SIZE[0] // 2
-    for i, dx in enumerate([-22, 0, 22]):
-        d.ellipse([cxc + dx - 4, 84, cxc + dx + 4, 92], fill=(255, 255, 255, 200))
+    _center(d, "@edgebetfr", 32, f_brand, WHITE)
+    for dx in (-22, 0, 22):
+        d.ellipse([cxc + dx - 4, 94, cxc + dx + 4, 102], fill=(255, 255, 255, 200))
 
     # ─── 2. Pill compétition + date ───
     league_raw = (bet.get("league") or "").upper()
-    # Pill league centré
-    tw_league = _text_w(d, league_raw, f_league) + 56
+    tw_league = _text_w(d, league_raw, f_league) + 60
     px_league = (SIZE[0] - tw_league) // 2
-    py_league = 140
-    d.rounded_rectangle([px_league, py_league, px_league + tw_league, py_league + 52],
-                        radius=26, fill=(0, 0, 0, 110))
+    py_league = 150
+    d.rounded_rectangle([px_league, py_league, px_league + tw_league, py_league + 60],
+                        radius=30, fill=(0, 0, 0, 120))
     _center(d, league_raw, py_league + 12, f_league, WHITE)
+    _center(d, _format_date(bet.get("match_date", "")), 230, f_date, TEXT_DIM)
 
-    _center(d, _format_date(bet.get("match_date", "")), 212, f_date, TEXT_DIM)
+    # ─── 3. Logos + équipes côte à côte ───
+    home_raw = bet.get("home_team") or ""
+    away_raw = bet.get("away_team") or ""
+    logo_size = 210
+    home_logo = _get_team_logo(home_raw, max_size=logo_size) or _team_initials_badge(home_raw, logo_size)
+    away_logo = _get_team_logo(away_raw, max_size=logo_size) or _team_initials_badge(away_raw, logo_size)
 
-    # ─── 3. Match : équipes côte à côte avec VS au centre ───
-    home_raw = (bet.get("home_team") or "").upper()
-    away_raw = (bet.get("away_team") or "").upper()
-    home_lines = _wrap_team_name(home_raw, 12)
-    away_lines = _wrap_team_name(away_raw, 12)
+    # Zone gauche (HOME)
+    left_cx = 220
+    right_cx = SIZE[0] - 220
+    logo_y = 300
 
-    team_y = 290
-    line_h = 60
+    # Logos
+    img.alpha_composite(home_logo, (left_cx - home_logo.width // 2, logo_y))
+    img.alpha_composite(away_logo, (right_cx - away_logo.width // 2, logo_y))
+    d = ImageDraw.Draw(img)  # refresh after alpha_composite
+
+    # Noms d'équipes sous logos
+    name_y = logo_y + logo_size + 16
+    home_lines = _wrap_team_name(home_raw.upper(), 11)
+    away_lines = _wrap_team_name(away_raw.upper(), 11)
     f_h = f_team_sm if len(home_lines) > 1 else f_team
     f_a = f_team_sm if len(away_lines) > 1 else f_team
-
-    # Zone gauche (centre x ~ 250) et droite (centre x ~ 830)
-    left_cx = 250
-    right_cx = SIZE[0] - 250
-
     for i, line in enumerate(home_lines):
         w = _text_w(d, line, f_h)
-        d.text((left_cx - w // 2, team_y + i * line_h), line, fill=WHITE, font=f_h)
+        d.text((left_cx - w // 2, name_y + i * 54), line, fill=WHITE, font=f_h)
     for i, line in enumerate(away_lines):
         w = _text_w(d, line, f_a)
-        d.text((right_cx - w // 2, team_y + i * line_h), line, fill=WHITE, font=f_a)
+        d.text((right_cx - w // 2, name_y + i * 54), line, fill=WHITE, font=f_a)
 
-    # "VS" central dans un petit cercle
-    vs_y = team_y + 18
-    vs_r = 42
+    # "VS" central dans cercle doré, à la hauteur des logos
+    vs_y = logo_y + logo_size // 2
+    vs_r = 56
     vs_layer = Image.new("RGBA", SIZE, (0, 0, 0, 0))
     vsd = ImageDraw.Draw(vs_layer)
     vsd.ellipse([cxc - vs_r, vs_y - vs_r, cxc + vs_r, vs_y + vs_r],
-                fill=(255, 215, 0, 230))   # cercle doré
+                fill=(255, 215, 0, 235))
     img.alpha_composite(vs_layer)
-    d = ImageDraw.Draw(img)  # recharge le draw après alpha_composite
+    d = ImageDraw.Draw(img)
     tw_vs = _text_w(d, "VS", f_vs)
-    d.text((cxc - tw_vs // 2, vs_y - f_vs.size // 2 - 4), "VS",
+    d.text((cxc - tw_vs // 2, vs_y - f_vs.size // 2 - 6), "VS",
            fill=(60, 0, 90), font=f_vs)
 
-    # ─── 4. Pick label ───
+    # ─── 4. Pick + Cote (badge circulaire) ───
     pick_template = OUTCOME_LABELS.get(bet.get("outcome", ""), "—")
     pick_text = pick_template.format(
-        home=(bet.get("home_team") or "").title(),
-        away=(bet.get("away_team") or "").title(),
+        home=home_raw.title(),
+        away=away_raw.title(),
     )
-    pick_y = 470
+    pick_y = 640
     _center(d, "NOTRE PARI", pick_y, f_pick_lbl, TEXT_DIM)
-    _center(d, pick_text, pick_y + 36, f_pick, WHITE)
+    _center(d, pick_text, pick_y + 40, f_pick, WHITE)
 
-    # ─── 5. Badge circulaire pour la COTE (focal point) ───
     odds = float(bet.get("odds") or 0)
     cote_str = f"x{odds:.2f}".replace(".", ",")
-    badge_cy = 700
-    _circle_badge(img, cxc, badge_cy, r=140, text=cote_str, font=f_cote, text_color=COTE_INK)
-    d = ImageDraw.Draw(img)  # refresh draw
+    badge_cy = 890
+    _circle_badge(img, cxc, badge_cy, r=135, text=cote_str, font=f_cote)
+    d = ImageDraw.Draw(img)
 
-    # Mini label sous le badge
-    _center(d, "COTE BOOKMAKER", badge_cy + 165, f_pick_lbl, TEXT_DIM)
-
-    # ─── 6. Exemple concret avec chevrons dessinés ───
+    # ─── 5. Exemple concret : MISE à gauche, GAIN à droite, badge cote au centre ───
     mise = 10.0
     gain_net = mise * (odds - 1)
     encaisse = mise * odds
-
-    ey = 920
-    # Layout : "10€   ▶▶   24,50€" centré
     mise_str = _format_eur(mise)
     enc_str = _format_eur(encaisse)
-    w_mise = _text_w(d, mise_str, f_ex_big)
-    w_enc = _text_w(d, enc_str, f_ex_big)
-    gap = 80
-    arrow_w = 70
-    total_w = w_mise + gap + arrow_w + gap + w_enc
-    start_x = (SIZE[0] - total_w) // 2
+    f_ex = _font(48, bold=True)
 
-    d.text((start_x, ey), mise_str, fill=WHITE, font=f_ex_big)
-    # Chevrons dorés
-    arrow_x = start_x + w_mise + gap
-    _arrow_chevron(d, arrow_x, ey + 8, size=50, color=ACCENT_GOLD)
-    # Encaisse en couleur dorée (gain)
-    d.text((start_x + w_mise + gap + arrow_w + gap, ey), enc_str,
-           fill=ACCENT_GOLD, font=f_ex_big)
+    # Zones bien à l'intérieur des marges
+    zone_w = 280
+    left_zone_x = 50
+    right_zone_x = SIZE[0] - zone_w - 50
 
-    # Sous-ligne
-    _center(d, f"soit +{_format_eur(gain_net)} de gain si ça passe",
-            ey + 80, f_sub, TEXT_DIM)
+    def _text_in_zone(lbl, y, font, color, x_off):
+        x = x_off + (zone_w - _text_w(d, lbl, font)) // 2
+        d.text((x, y), lbl, fill=color, font=font)
 
-    # ─── 7. Footer ───
+    _text_in_zone("MISE", badge_cy - 56, f_ex_lbl, TEXT_DIM, left_zone_x)
+    _text_in_zone(mise_str, badge_cy - 18, f_ex, WHITE, left_zone_x)
+    _text_in_zone("GAIN", badge_cy - 56, f_ex_lbl, TEXT_DIM, right_zone_x)
+    _text_in_zone(enc_str, badge_cy - 18, f_ex, ACCENT_GOLD, right_zone_x)
+
+    # Sous-ligne avec le gain net
+    _center(d, f"+ {_format_eur(gain_net)} de gain net si ça passe",
+            1000, f_sub, TEXT_DIM)
+
+    # ─── 6. Footer ───
     _center(d, "Jeu responsable · 18+ · Mise ce que tu peux perdre",
-            1030, f_footer, TEXT_DIM)
+            1045, f_footer, TEXT_DIM)
 
     # ─── Save ───
     final = img.convert("RGB")
