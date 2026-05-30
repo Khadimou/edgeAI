@@ -75,7 +75,8 @@ def _prob_for_outcome(bet: dict) -> float:
 
 def generate_value_bet_image(bet: dict) -> Path:
     """
-    Génère une image PNG 1080×1080 pour un value bet.
+    Génère une image JPEG 1080×1080 pour un value bet.
+    (Instagram Graph API n'accepte QUE le JPEG pour les posts feed — PNG = 400.)
     Retourne le chemin du fichier créé.
 
     Champs attendus dans bet:
@@ -183,6 +184,6 @@ def generate_value_bet_image(bet: dict) -> Path:
     _center(d, "Investir, pas parier.", fy + 22, f28, TEXT_MUTED)
     _center(d, "@edgebet", fy + 65, f48, ACCENT)
 
-    filepath = STATIC_DIR / f"vb_{uuid.uuid4().hex[:12]}.png"
-    img.save(filepath, "PNG", optimize=True)
+    filepath = STATIC_DIR / f"vb_{uuid.uuid4().hex[:12]}.jpg"
+    img.save(filepath, "JPEG", quality=92, optimize=True, progressive=False)
     return filepath
