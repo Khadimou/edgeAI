@@ -31,7 +31,12 @@ class InstagramPublisher:
                     "access_token": settings.instagram_access_token,
                 },
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # Surface le message d'erreur Meta (sinon raise_for_status masque tout)
+                raise RuntimeError(
+                    f"Meta /media {r.status_code} : {r.text[:500]} "
+                    f"(image_url={image_url})"
+                )
             return r.json()["id"]
 
     async def _publish_container(self, creation_id: str) -> str:
@@ -43,7 +48,10 @@ class InstagramPublisher:
                     "access_token": settings.instagram_access_token,
                 },
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                raise RuntimeError(
+                    f"Meta /media_publish {r.status_code} : {r.text[:500]}"
+                )
             return r.json()["id"]
 
     async def post(self, image_url: str, caption: str) -> str:
