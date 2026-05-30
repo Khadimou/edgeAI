@@ -77,6 +77,88 @@ KNOWN_CRESTS = {
 
 CREST_URL = "https://crests.football-data.org/{id}.png"
 
+# ─── Drapeaux pour sélections nationales (Coupe du Monde) ───
+# Source : flagcdn.com (gratuit, codes ISO 3166-1 alpha-2).
+# Drapeau rendu masqué en cercle pour cohérence visuelle avec les crests clubs.
+KNOWN_FLAGS = {
+    # UEFA
+    "france": "fr",
+    "germany": "de", "allemagne": "de",
+    "spain": "es", "espagne": "es",
+    "italy": "it", "italie": "it",
+    "england": "gb-eng",
+    "portugal": "pt",
+    "netherlands": "nl", "pays-bas": "nl",
+    "belgium": "be", "belgique": "be",
+    "croatia": "hr", "croatie": "hr",
+    "switzerland": "ch", "suisse": "ch",
+    "denmark": "dk", "danemark": "dk",
+    "sweden": "se", "suède": "se",
+    "poland": "pl", "pologne": "pl",
+    "serbia": "rs", "serbie": "rs",
+    "wales": "gb-wls", "scotland": "gb-sct",
+    "republic of ireland": "ie", "ireland": "ie",
+    "northern ireland": "gb-nir",
+    "ukraine": "ua", "russia": "ru", "russie": "ru",
+    "turkey": "tr", "turquie": "tr", "türkiye": "tr",
+    "romania": "ro", "greece": "gr", "grèce": "gr",
+    "hungary": "hu", "slovakia": "sk", "slovenia": "si",
+    "iceland": "is", "islande": "is", "finland": "fi",
+    "norway": "no", "norvège": "no",
+    "austria": "at", "autriche": "at",
+    "czech republic": "cz", "czechia": "cz",
+    "bosnia and herzegovina": "ba",
+    "bulgaria": "bg", "albania": "al",
+    "north macedonia": "mk", "montenegro": "me", "kosovo": "xk",
+    # CONMEBOL (Amérique du Sud)
+    "brazil": "br", "brésil": "br",
+    "argentina": "ar", "argentine": "ar",
+    "uruguay": "uy", "colombia": "co", "colombie": "co",
+    "chile": "cl", "chili": "cl",
+    "peru": "pe", "pérou": "pe",
+    "ecuador": "ec", "équateur": "ec",
+    "paraguay": "py", "venezuela": "ve", "bolivia": "bo",
+    # CONCACAF (Amérique du Nord/Centrale)
+    "united states": "us", "usa": "us", "etats-unis": "us",
+    "mexico": "mx", "mexique": "mx",
+    "canada": "ca",
+    "costa rica": "cr", "honduras": "hn", "panama": "pa",
+    "jamaica": "jm", "el salvador": "sv",
+    "trinidad and tobago": "tt", "haiti": "ht", "haïti": "ht",
+    "guatemala": "gt", "curaçao": "cw", "curacao": "cw",
+    # CAF (Afrique)
+    "senegal": "sn", "sénégal": "sn",
+    "morocco": "ma", "maroc": "ma",
+    "tunisia": "tn", "tunisie": "tn",
+    "algeria": "dz", "algérie": "dz",
+    "egypt": "eg", "égypte": "eg",
+    "nigeria": "ng", "ghana": "gh", "cameroon": "cm", "cameroun": "cm",
+    "ivory coast": "ci", "côte d'ivoire": "ci",
+    "south africa": "za", "afrique du sud": "za",
+    "mali": "ml", "burkina faso": "bf",
+    "dr congo": "cd", "zambia": "zm", "kenya": "ke",
+    "angola": "ao", "cape verde": "cv", "cap-vert": "cv",
+    "gabon": "ga", "guinea": "gn", "guinée": "gn",
+    # AFC (Asie + Australie)
+    "japan": "jp", "japon": "jp",
+    "south korea": "kr", "korea republic": "kr",
+    "saudi arabia": "sa", "arabie saoudite": "sa",
+    "iran": "ir", "ir iran": "ir",
+    "australia": "au", "australie": "au",
+    "qatar": "qa", "iraq": "iq",
+    "united arab emirates": "ae",
+    "china pr": "cn", "china": "cn", "chine": "cn",
+    "uzbekistan": "uz", "thailand": "th",
+    "vietnam": "vn", "lebanon": "lb",
+    "syria": "sy", "jordan": "jo",
+    "oman": "om", "bahrain": "bh", "kuwait": "kw",
+    # OFC (Océanie)
+    "new zealand": "nz", "nouvelle-zélande": "nz",
+    "fiji": "fj", "tahiti": "pf",
+    "solomon islands": "sb",
+}
+FLAG_URL = "https://flagcdn.com/w640/{code}.png"
+
 _FONT_BOLD_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -122,27 +204,78 @@ def _find_team_id(team_name: str) -> int | None:
     return None
 
 
-def _get_team_logo(team_name: str, max_size: int = 240) -> Image.Image | None:
-    fd_id = _find_team_id(team_name)
-    if fd_id is None:
-        return None
-    LOGO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = LOGO_CACHE_DIR / f"{fd_id}.png"
-    if not cache.exists():
-        try:
-            import httpx
-            r = httpx.get(CREST_URL.format(id=fd_id), timeout=10, follow_redirects=True)
-            if r.status_code != 200 or len(r.content) < 100:
-                return None
-            cache.write_bytes(r.content)
-        except Exception:
-            return None
+def _find_country_code(team_name: str) -> str | None:
+    """Cherche le code ISO du drapeau pour une sélection nationale."""
+    name = team_name.strip().lower()
+    if name in KNOWN_FLAGS:
+        return KNOWN_FLAGS[name]
+    for k, v in KNOWN_FLAGS.items():
+        if k in name or name in k:
+            return v
+    return None
+
+
+def _circular_mask(img: Image.Image) -> Image.Image:
+    """Crop centré en carré + masque circulaire (cohérence visuelle avec les crests ronds)."""
+    w, h = img.size
+    s = min(w, h)
+    left = (w - s) // 2
+    top = (h - s) // 2
+    sq = img.crop((left, top, left + s, top + s)).convert("RGBA")
+    mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, s, s), fill=255)
+    out = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    out.paste(sq, (0, 0), mask=mask)
+    return out
+
+
+def _fetch_cached(url: str, cache_path: Path) -> bool:
+    """Télécharge et cache, retourne True si succès (fichier existe après)."""
+    if cache_path.exists():
+        return True
     try:
-        logo = Image.open(cache).convert("RGBA")
-        logo.thumbnail((max_size, max_size), Image.LANCZOS)
-        return logo
+        import httpx
+        r = httpx.get(url, timeout=10, follow_redirects=True)
+        if r.status_code != 200 or len(r.content) < 100:
+            return False
+        cache_path.write_bytes(r.content)
+        return True
     except Exception:
-        return None
+        return False
+
+
+def _get_team_logo(team_name: str, max_size: int = 240) -> Image.Image | None:
+    """Renvoie le logo (crest club OU drapeau pays masqué en cercle).
+
+    Ordre : drapeau national d'abord (priorité pour la WC), puis crest club.
+    """
+    LOGO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1) Drapeau pays (sélection nationale)
+    code = _find_country_code(team_name)
+    if code is not None:
+        cache = LOGO_CACHE_DIR / f"flag_{code}.png"
+        if _fetch_cached(FLAG_URL.format(code=code), cache):
+            try:
+                flag = Image.open(cache).convert("RGBA")
+                flag = _circular_mask(flag)
+                flag.thumbnail((max_size, max_size), Image.LANCZOS)
+                return flag
+            except Exception:
+                pass
+
+    # 2) Crest club (football-data.org)
+    fd_id = _find_team_id(team_name)
+    if fd_id is not None:
+        cache = LOGO_CACHE_DIR / f"{fd_id}.png"
+        if _fetch_cached(CREST_URL.format(id=fd_id), cache):
+            try:
+                logo = Image.open(cache).convert("RGBA")
+                logo.thumbnail((max_size, max_size), Image.LANCZOS)
+                return logo
+            except Exception:
+                pass
+    return None
 
 
 def _team_initials_badge(team_name: str, size: int = 220) -> Image.Image:
