@@ -1,25 +1,25 @@
 """
-Génère l'image d'un value bet pour Instagram (1080x1080).
-Design grand public : zéro jargon, focal point sur le pari + gain potentiel.
+Image Instagram 1080×1080 pour un value bet — style vibrant IG.
+Gradient diagonal violet→rose vif, badge circulaire pour la cote, zéro jargon.
 """
 from __future__ import annotations
 import os
+import random
 import uuid
 from datetime import datetime
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ─── Palette ──────────────────────────────────────────────────────────
-BG_TOP       = (15, 12, 41)      # deep purple
-BG_BOTTOM    = (8, 8, 20)        # near black
-ACCENT       = (0, 230, 118)     # vivid green (money / win)
-ACCENT_SOFT  = (0, 180, 95)
+BG_TL        = (36, 0, 70)        # deep violet (top-left)
+BG_BR        = (255, 20, 130)     # vivid pink (bottom-right)
 WHITE        = (255, 255, 255)
-TEXT_PRIMARY = (245, 245, 250)
-TEXT_MUTED   = (165, 170, 195)
-CARD_BG      = (28, 24, 60)
-DIVIDER      = (60, 56, 100)
-RED          = (255, 95, 100)
+COTE_INK     = (74, 0, 110)       # texte cote sur badge blanc
+PICK_INK     = (255, 255, 255)    # blanc pur
+ACCENT_GOLD  = (255, 215, 0)
+TEXT_SOFT    = (255, 255, 255)
+TEXT_DIM     = (235, 220, 245)    # blanc cassé violacé pour secondaires
+DIM_OVERLAY  = (0, 0, 0, 90)      # voile noir transparent pour lisibilité
 
 SIZE = (1080, 1080)
 STATIC_DIR = Path(__file__).parent.parent / "static" / "instagram"
@@ -46,7 +46,7 @@ _FONT_REGULAR_CANDIDATES = [
 ]
 
 
-def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _font(size: int, bold: bool = True):
     candidates = _FONT_BOLD_CANDIDATES if bold else _FONT_REGULAR_CANDIDATES
     for path in candidates:
         if os.path.exists(path):
@@ -57,43 +57,65 @@ def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont | ImageFont.Im
     return ImageFont.load_default()
 
 
-def _text_w(draw: ImageDraw.ImageDraw, text: str, font) -> int:
+def _text_w(draw, text, font):
     bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0]
 
 
-def _center(draw: ImageDraw.ImageDraw, text: str, y: int,
-            font, color=TEXT_PRIMARY, width: int = SIZE[0]) -> None:
+def _center(draw, text, y, font, color=WHITE, width=SIZE[0]):
     x = (width - _text_w(draw, text, font)) // 2
     draw.text((x, y), text, fill=color, font=font)
 
 
-def _wrap_team_name(name: str, max_chars: int = 18) -> str:
-    """Coupe les noms trop longs (ex 'Paris Saint Germain') sur 2 lignes."""
+def _wrap_team_name(name: str, max_chars: int = 14) -> list[str]:
+    """Découpe sur 1 ou 2 lignes pour les noms longs."""
     if len(name) <= max_chars:
-        return name
+        return [name]
     words = name.split()
     if len(words) <= 1:
-        return name
+        return [name]
     mid = len(words) // 2
-    return " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
+    return [" ".join(words[:mid]), " ".join(words[mid:])]
 
 
-def _gradient_bg(img: Image.Image) -> None:
-    """Dégradé vertical top→bottom (deep purple → near black)."""
-    h = img.height
-    px = img.load()
-    for y in range(h):
-        t = y / max(1, h - 1)
-        r = int(BG_TOP[0] * (1 - t) + BG_BOTTOM[0] * t)
-        g = int(BG_TOP[1] * (1 - t) + BG_BOTTOM[1] * t)
-        b = int(BG_TOP[2] * (1 - t) + BG_BOTTOM[2] * t)
-        for x in range(img.width):
-            px[x, y] = (r, g, b)
+# ─── Background gradient diagonal ────────────────────────────────────
+
+def _diagonal_gradient(size: tuple[int, int], c1: tuple, c2: tuple) -> Image.Image:
+    """Gradient diagonal (top-left c1 → bottom-right c2) via rotation d'un strip vertical."""
+    w, h = size
+    # Diagonale + marge
+    diag = int(((w * w + h * h) ** 0.5)) + 20
+    # Strip 1 px de large, hauteur diagonale
+    strip = Image.new("RGB", (1, diag))
+    for y in range(diag):
+        t = y / max(1, diag - 1)
+        r = int(c1[0] * (1 - t) + c2[0] * t)
+        g = int(c1[1] * (1 - t) + c2[1] * t)
+        b = int(c1[2] * (1 - t) + c2[2] * t)
+        strip.putpixel((0, y), (r, g, b))
+    # Étire en largeur, puis tourne -45° pour diagonal, puis crop au centre
+    big = strip.resize((diag, diag))
+    rotated = big.rotate(-45, resample=Image.BILINEAR, expand=False)
+    left = (rotated.width - w) // 2
+    top = (rotated.height - h) // 2
+    return rotated.crop((left, top, left + w, top + h))
+
+
+def _dots_overlay(size: tuple[int, int], count: int = 60, alpha: int = 28) -> Image.Image:
+    """Petits points blancs semi-transparents pour texture (random fixed seed)."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    rng = random.Random(42)
+    for _ in range(count):
+        x = rng.randint(0, size[0])
+        y = rng.randint(0, size[1])
+        r = rng.choice([3, 4, 5, 6, 8])
+        draw.ellipse([x - r, y - r, x + r, y + r],
+                     fill=(255, 255, 255, alpha))
+    return layer
 
 
 def _format_eur(v: float) -> str:
-    """Format français : 1.50 → '1,50€'."""
     return f"{v:.2f}".replace(".", ",") + "€"
 
 
@@ -103,124 +125,218 @@ def _format_date(match_date) -> str:
             dt = datetime.fromisoformat(match_date.replace("Z", "+00:00"))
         else:
             dt = match_date
+        days = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
         months = ["jan", "fév", "mars", "avr", "mai", "juin",
                   "juil", "août", "sept", "oct", "nov", "déc"]
-        return f"{dt.day} {months[dt.month-1]} · {dt.hour:02d}h{dt.minute:02d}"
+        return f"{days[dt.weekday()]} {dt.day} {months[dt.month-1]}  ·  {dt.hour:02d}h{dt.minute:02d}"
     except Exception:
         return str(match_date)[:16]
 
 
+# ─── Composants visuels ──────────────────────────────────────────────
+
+def _pill(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font,
+          fg=WHITE, bg=DIM_OVERLAY, pad_x: int = 28, pad_y: int = 14) -> tuple[int, int]:
+    """Pill arrondi avec texte centré. Retourne (largeur, hauteur)."""
+    tw = _text_w(draw, text, font)
+    th = font.size
+    w = tw + 2 * pad_x
+    h = th + 2 * pad_y
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=bg)
+    draw.text((x + pad_x, y + pad_y - 3), text, fill=fg, font=font)
+    return w, h
+
+
+def _circle_badge(img: Image.Image, cx: int, cy: int, r: int,
+                  text: str, font, text_color=COTE_INK) -> None:
+    """Badge circulaire blanc avec ombre/lueur et texte centré."""
+    # Lueur extérieure (cercle plus grand, blanc translucide, flou)
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([cx - r - 30, cy - r - 30, cx + r + 30, cy + r + 30],
+               fill=(255, 255, 255, 90))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=20))
+    img.alpha_composite(glow)
+
+    # Ombre portée (cercle noir flou décalé)
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    sd.ellipse([cx - r + 8, cy - r + 14, cx + r + 8, cy + r + 14],
+               fill=(0, 0, 0, 130))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=12))
+    img.alpha_composite(shadow)
+
+    # Badge blanc
+    badge = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    bd = ImageDraw.Draw(badge)
+    bd.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 255, 255, 255))
+    img.alpha_composite(badge)
+
+    # Texte centré
+    final_draw = ImageDraw.Draw(img)
+    tw = _text_w(final_draw, text, font)
+    th = font.size
+    final_draw.text((cx - tw // 2, cy - th // 2 - 8), text,
+                    fill=text_color, font=font)
+
+
+def _arrow_chevron(draw: ImageDraw.ImageDraw, x: int, y: int, size: int = 36,
+                   color=WHITE) -> int:
+    """Dessine 2 chevrons ▶▶ pointant à droite. Retourne la largeur dessinée."""
+    s = size
+    spacing = s // 3
+    for i in range(2):
+        ox = x + i * (s // 2 + spacing)
+        poly = [(ox, y), (ox + s // 2, y + s // 2), (ox, y + s)]
+        draw.polygon(poly, fill=color)
+    return s + spacing + 2
+
+
+# ─── Génération principale ──────────────────────────────────────────
+
 def generate_value_bet_image(bet: dict) -> Path:
-    """
-    Image Instagram 1080x1080 grand public — sans jargon technique.
-    Met l'accent sur : match, choix simple, cote, et gain concret pour 10€ misés.
-    """
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    img = Image.new("RGB", SIZE)
-    _gradient_bg(img)
+
+    # 1) Fond : gradient diagonal en RGB
+    bg = _diagonal_gradient(SIZE, BG_TL, BG_BR)
+    # On passe en RGBA pour pouvoir composer des layers
+    img = bg.convert("RGBA")
+
+    # 2) Texture : dots semi-transparents
+    img.alpha_composite(_dots_overlay(SIZE, count=80, alpha=22))
+
+    # 3) Voile sombre subtil top + bottom pour lisibilité texte
+    veil = Image.new("RGBA", SIZE, (0, 0, 0, 0))
+    vd = ImageDraw.Draw(veil)
+    vd.rectangle([0, 0, SIZE[0], 100], fill=(0, 0, 0, 70))           # bandeau top
+    vd.rectangle([0, SIZE[1] - 70, SIZE[0], SIZE[1]], fill=(0, 0, 0, 80))  # bandeau bottom
+    img.alpha_composite(veil)
+
     d = ImageDraw.Draw(img)
 
     # ─── Polices ───
     f_brand   = _font(40, bold=True)
-    f_league  = _font(28, bold=False)
+    f_league  = _font(26, bold=True)
     f_date    = _font(28, bold=False)
-    f_team    = _font(74, bold=True)
-    f_team_sm = _font(58, bold=True)   # quand le nom est long et wrappé
-    f_vs      = _font(34, bold=False)
-    f_pick_lbl= _font(26, bold=False)
-    f_pick    = _font(50, bold=True)
-    f_cote_lbl= _font(26, bold=False)
-    f_cote    = _font(115, bold=True)
-    f_h       = _font(36, bold=True)
+    f_team    = _font(70, bold=True)
+    f_team_sm = _font(54, bold=True)
+    f_vs      = _font(36, bold=True)
+    f_pick_lbl= _font(24, bold=False)
+    f_pick    = _font(48, bold=True)
+    f_cote    = _font(118, bold=True)
     f_ex_big  = _font(64, bold=True)
-    f_ex_lbl  = _font(28, bold=False)
-    f_footer  = _font(24, bold=False)
+    f_ex_lbl  = _font(26, bold=False)
+    f_sub     = _font(26, bold=False)
+    f_footer  = _font(22, bold=False)
 
-    # ─── Top brand bar ───
-    d.rectangle([0, 0, SIZE[0], 90], fill=(0, 0, 0, 0))
-    _center(d, "@edgebetfr", 24, f_brand, WHITE)
-    # Petit dot accent sous le handle
-    d.ellipse([SIZE[0] // 2 - 5, 78, SIZE[0] // 2 + 5, 88], fill=ACCENT)
+    # ─── 1. Brand top ───
+    _center(d, "@edgebetfr", 30, f_brand, WHITE)
+    # petit underline sous le handle (3 dots horizontaux)
+    cxc = SIZE[0] // 2
+    for i, dx in enumerate([-22, 0, 22]):
+        d.ellipse([cxc + dx - 4, 84, cxc + dx + 4, 92], fill=(255, 255, 255, 200))
 
-    # ─── Compétition + date ───
+    # ─── 2. Pill compétition + date ───
     league_raw = (bet.get("league") or "").upper()
-    _center(d, league_raw, 120, f_league, TEXT_MUTED)
-    _center(d, _format_date(bet.get("match_date", "")), 160, f_date, TEXT_MUTED)
+    # Pill league centré
+    tw_league = _text_w(d, league_raw, f_league) + 56
+    px_league = (SIZE[0] - tw_league) // 2
+    py_league = 140
+    d.rounded_rectangle([px_league, py_league, px_league + tw_league, py_league + 52],
+                        radius=26, fill=(0, 0, 0, 110))
+    _center(d, league_raw, py_league + 12, f_league, WHITE)
 
-    # ─── Affiche du match (hero) ───
-    home = (bet.get("home_team") or "").upper()
-    away = (bet.get("away_team") or "").upper()
-    home_w = _wrap_team_name(home, 14)
-    away_w = _wrap_team_name(away, 14)
-    f_home = f_team_sm if "\n" in home_w else f_team
-    f_away = f_team_sm if "\n" in away_w else f_team
+    _center(d, _format_date(bet.get("match_date", "")), 212, f_date, TEXT_DIM)
 
-    # On dessine HOME en haut, "VS" au milieu, AWAY en bas
-    y_home_start = 230
-    for i, line in enumerate(home_w.split("\n")):
-        _center(d, line, y_home_start + i * 70, f_home, WHITE)
-    y_vs = y_home_start + (70 * len(home_w.split("\n"))) + 6
-    _center(d, "vs", y_vs, f_vs, TEXT_MUTED)
-    y_away_start = y_vs + 56
-    for i, line in enumerate(away_w.split("\n")):
-        _center(d, line, y_away_start + i * 70, f_away, WHITE)
+    # ─── 3. Match : équipes côte à côte avec VS au centre ───
+    home_raw = (bet.get("home_team") or "").upper()
+    away_raw = (bet.get("away_team") or "").upper()
+    home_lines = _wrap_team_name(home_raw, 12)
+    away_lines = _wrap_team_name(away_raw, 12)
 
-    # ─── Carte du pari (focal) ───
-    cx, cy, cw, ch = 60, 540, SIZE[0] - 120, 290
-    # Ombre douce
-    d.rounded_rectangle([cx + 4, cy + 6, cx + cw + 4, cy + ch + 6],
-                        radius=28, fill=(4, 4, 12))
-    # Carte
-    d.rounded_rectangle([cx, cy, cx + cw, cy + ch],
-                        radius=28, fill=CARD_BG, outline=ACCENT, width=3)
+    team_y = 290
+    line_h = 60
+    f_h = f_team_sm if len(home_lines) > 1 else f_team
+    f_a = f_team_sm if len(away_lines) > 1 else f_team
 
-    _center(d, "NOTRE PARI", cy + 22, f_pick_lbl, TEXT_MUTED)
+    # Zone gauche (centre x ~ 250) et droite (centre x ~ 830)
+    left_cx = 250
+    right_cx = SIZE[0] - 250
+
+    for i, line in enumerate(home_lines):
+        w = _text_w(d, line, f_h)
+        d.text((left_cx - w // 2, team_y + i * line_h), line, fill=WHITE, font=f_h)
+    for i, line in enumerate(away_lines):
+        w = _text_w(d, line, f_a)
+        d.text((right_cx - w // 2, team_y + i * line_h), line, fill=WHITE, font=f_a)
+
+    # "VS" central dans un petit cercle
+    vs_y = team_y + 18
+    vs_r = 42
+    vs_layer = Image.new("RGBA", SIZE, (0, 0, 0, 0))
+    vsd = ImageDraw.Draw(vs_layer)
+    vsd.ellipse([cxc - vs_r, vs_y - vs_r, cxc + vs_r, vs_y + vs_r],
+                fill=(255, 215, 0, 230))   # cercle doré
+    img.alpha_composite(vs_layer)
+    d = ImageDraw.Draw(img)  # recharge le draw après alpha_composite
+    tw_vs = _text_w(d, "VS", f_vs)
+    d.text((cxc - tw_vs // 2, vs_y - f_vs.size // 2 - 4), "VS",
+           fill=(60, 0, 90), font=f_vs)
+
+    # ─── 4. Pick label ───
     pick_template = OUTCOME_LABELS.get(bet.get("outcome", ""), "—")
     pick_text = pick_template.format(
         home=(bet.get("home_team") or "").title(),
         away=(bet.get("away_team") or "").title(),
     )
-    _center(d, pick_text, cy + 60, f_pick, WHITE)
+    pick_y = 470
+    _center(d, "NOTRE PARI", pick_y, f_pick_lbl, TEXT_DIM)
+    _center(d, pick_text, pick_y + 36, f_pick, WHITE)
 
-    # Cote géante avec petit "x" devant — calibrée pour rester dans la carte
+    # ─── 5. Badge circulaire pour la COTE (focal point) ───
     odds = float(bet.get("odds") or 0)
     cote_str = f"x{odds:.2f}".replace(".", ",")
-    _center(d, "COTE", cy + 132, f_cote_lbl, TEXT_MUTED)
-    _center(d, cote_str, cy + 158, f_cote, ACCENT)
+    badge_cy = 700
+    _circle_badge(img, cxc, badge_cy, r=140, text=cote_str, font=f_cote, text_color=COTE_INK)
+    d = ImageDraw.Draw(img)  # refresh draw
 
-    # ─── Exemple concret ───
-    ey = 870  # sous la carte (qui finit à 540+290=830)
+    # Mini label sous le badge
+    _center(d, "COTE BOOKMAKER", badge_cy + 165, f_pick_lbl, TEXT_DIM)
+
+    # ─── 6. Exemple concret avec chevrons dessinés ───
     mise = 10.0
     gain_net = mise * (odds - 1)
     encaisse = mise * odds
 
-    # Ligne pédagogique : "TU MISES 10€  →  TU ENCAISSES 24,50€"
-    left_lbl  = "TU MISES"
-    right_lbl = "TU ENCAISSES"
-    mid_arrow = "→"
+    ey = 920
+    # Layout : "10€   ▶▶   24,50€" centré
+    mise_str = _format_eur(mise)
+    enc_str = _format_eur(encaisse)
+    w_mise = _text_w(d, mise_str, f_ex_big)
+    w_enc = _text_w(d, enc_str, f_ex_big)
+    gap = 80
+    arrow_w = 70
+    total_w = w_mise + gap + arrow_w + gap + w_enc
+    start_x = (SIZE[0] - total_w) // 2
 
-    _center(d, left_lbl, ey, f_ex_lbl, TEXT_MUTED, width=SIZE[0] // 2)
-    _center(d, _format_eur(mise), ey + 30, f_ex_big, WHITE, width=SIZE[0] // 2)
-    arrow_x = SIZE[0] // 2 - _text_w(d, mid_arrow, f_ex_big) // 2
-    d.text((arrow_x, ey + 30), mid_arrow, fill=ACCENT, font=f_ex_big)
-    right_x_offset = SIZE[0] // 2
-    bbox_r = d.textbbox((0, 0), right_lbl, font=f_ex_lbl)
-    d.text((right_x_offset + (SIZE[0] // 2 - (bbox_r[2] - bbox_r[0])) // 2, ey),
-           right_lbl, fill=TEXT_MUTED, font=f_ex_lbl)
-    bbox_v = d.textbbox((0, 0), _format_eur(encaisse), font=f_ex_big)
-    d.text((right_x_offset + (SIZE[0] // 2 - (bbox_v[2] - bbox_v[0])) // 2, ey + 30),
-           _format_eur(encaisse), fill=ACCENT, font=f_ex_big)
+    d.text((start_x, ey), mise_str, fill=WHITE, font=f_ex_big)
+    # Chevrons dorés
+    arrow_x = start_x + w_mise + gap
+    _arrow_chevron(d, arrow_x, ey + 8, size=50, color=ACCENT_GOLD)
+    # Encaisse en couleur dorée (gain)
+    d.text((start_x + w_mise + gap + arrow_w + gap, ey), enc_str,
+           fill=ACCENT_GOLD, font=f_ex_big)
 
-    # Sous-ligne : "soit +X€ de gain" — au-dessus du footer pour ne pas être barrée
+    # Sous-ligne
     _center(d, f"soit +{_format_eur(gain_net)} de gain si ça passe",
-            ey + 105, f_ex_lbl, TEXT_MUTED)
+            ey + 80, f_sub, TEXT_DIM)
 
-    # ─── Footer ───
-    fy = 1030  # poussé en bas pour laisser de l'air sous la sous-ligne
+    # ─── 7. Footer ───
     _center(d, "Jeu responsable · 18+ · Mise ce que tu peux perdre",
-            fy, f_footer, TEXT_MUTED)
+            1030, f_footer, TEXT_DIM)
 
     # ─── Save ───
+    final = img.convert("RGB")
     filepath = STATIC_DIR / f"vb_{uuid.uuid4().hex[:12]}.jpg"
-    img.save(filepath, "JPEG", quality=92, optimize=True, progressive=False)
+    final.save(filepath, "JPEG", quality=92, optimize=True, progressive=False)
     return filepath
