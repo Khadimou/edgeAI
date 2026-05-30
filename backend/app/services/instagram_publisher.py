@@ -8,7 +8,10 @@ from app.core.config import settings
 
 
 class InstagramPublisher:
-    BASE = "https://graph.facebook.com/v21.0"
+    # Instagram Login Direct API (2024+) : tokens IGAA... via graph.instagram.com.
+    # L'ancien flow Facebook Graph (graph.facebook.com + tokens EAA... via Page FB)
+    # rejette les tokens IGAA avec "Cannot parse access token".
+    BASE = "https://graph.instagram.com/v21.0"
 
     @property
     def _configured(self) -> bool:
