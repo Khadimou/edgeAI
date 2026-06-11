@@ -27,15 +27,29 @@ log = structlog.get_logger()
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 NOTIFIED_KEY_TTL = 7 * 24 * 3600  # garde le memo 7 jours
 
-# Mêmes seuils Kelly que la prod
-EDGE_MIN = 0.08
-EDGE_MAX = 0.20
+# Plafond d'edge PAR MARCHÉ — DOIT matcher backend/app/services/kelly.py
+# (MAX_EDGE_BY_MARKET). Sinon un bet affiché sur le site (qui utilise kelly)
+# n'est pas notifié → bug observé à l'ouverture de la WC 2026.
+MAX_EDGE_BY_MARKET = {
+    "1X2": 0.30,
+    "OU_2_5": 0.15,
+    "AH": 0.30,
+}
+_FALLBACK_EDGE_MAX = 0.30
 
 
 def _actual_edge(prob: float | None, odds: float | None) -> float | None:
     if not prob or not odds or odds <= 1.0:
         return None
     return prob * odds - 1
+
+
+def _is_value(edge: float | None, market: str, edge_min: float) -> bool:
+    """Même logique que le site : edge_min config + edge_max par marché."""
+    if edge is None:
+        return False
+    edge_max = MAX_EDGE_BY_MARKET.get(market, _FALLBACK_EDGE_MAX)
+    return edge_min <= edge <= edge_max
 
 
 async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict]:
@@ -46,6 +60,8 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
     league_wl_1x2 = set(settings.value_bet_leagues)
     league_wl_ou = set(settings.value_bet_ou_leagues)
     league_wl_ah = set(settings.value_bet_ah_leagues)
+    # Edge min depuis la config (pas hardcodé) pour rester aligné avec le site.
+    edge_min = getattr(settings, "value_bet_edge_min", 0.05)
 
     result = await session.execute(text("""
         SELECT m.id, m.league, m.home_team, m.away_team, m.match_date,
@@ -62,7 +78,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
             ORDER BY computed_at DESC LIMIT 1
         ) p ON TRUE
         WHERE m.sport = 'FOOTBALL' AND m.status = 'SCHEDULED'
-          AND m.match_date BETWEEN NOW() AND NOW() + interval '48 hours'
+          AND m.match_date BETWEEN NOW() AND NOW() + interval '7 days'
     """))
     rows = result.fetchall()
 
@@ -81,7 +97,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("AWAY", r[15], r[7], away),
             ]:
                 edge = _actual_edge(prob, odds)
-                if edge is not None and EDGE_MIN <= edge <= EDGE_MAX:
+                if _is_value(edge, "1X2", edge_min):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,
@@ -97,7 +113,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("UNDER", r[17], r[9], "-2.5 buts"),
             ]:
                 edge = _actual_edge(prob, odds)
-                if edge is not None and EDGE_MIN <= edge <= EDGE_MAX:
+                if _is_value(edge, "OU_2_5", edge_min):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,
@@ -114,7 +130,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("AH_AWAY", r[19], r[12], f"{away} ({-ah_line:+g})"),
             ]:
                 edge = _actual_edge(prob, odds)
-                if edge is not None and EDGE_MIN <= edge <= EDGE_MAX:
+                if _is_value(edge, "AH", edge_min):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,
@@ -269,13 +285,10 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     if not current_bets:
         return 0
 
-    # Dedup via Redis : ne notifie que les nouveaux
-    new_bets = []
-    for vb in current_bets:
-        key = _vb_key(vb)
-        if not await redis.get(key):
-            new_bets.append(vb)
-            await redis.setex(key, NOTIFIED_KEY_TTL, "1")
+    # Dedup via Redis : ne notifie que les nouveaux. NE PAS marquer notifié ici —
+    # seulement après l'envoi réussi de l'email, sinon un échec Brevo déduplique
+    # à jamais le bet (bug : marqué notifié alors que jamais envoyé).
+    new_bets = [vb for vb in current_bets if not await redis.get(_vb_key(vb))]
 
     if not new_bets:
         log.info("notifications_nothing_new", current=len(current_bets))
@@ -289,6 +302,9 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     html = _build_email_html(new_bets, app_url)
     ok = await _send_brevo_email(api_key, from_email, to_email, subject, html)
     if ok:
+        # Marque notifié SEULEMENT après envoi réussi
+        for vb in new_bets:
+            await redis.setex(_vb_key(vb), NOTIFIED_KEY_TTL, "1")
         log.info("notifications_sent", count=len(new_bets), total=len(current_bets))
         # Publication Instagram : meilleur value bet (edge le plus élevé)
         best = max(new_bets, key=lambda b: b["edge"])
