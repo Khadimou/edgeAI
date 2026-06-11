@@ -44,9 +44,16 @@ def _actual_edge(prob: float | None, odds: float | None) -> float | None:
     return prob * odds - 1
 
 
-def _is_value(edge: float | None, market: str, edge_min: float) -> bool:
-    """Même logique que le site : edge_min config + edge_max par marché."""
+def _is_value(edge: float | None, market: str, edge_min: float,
+              odds: float | None = None, odds_max: float = 5.0) -> bool:
+    """Même logique que le site : edge_min config + edge_max par marché + plafond cote.
+
+    Le plafond de cote filtre les gros outsiders (favourite-longshot bias) où le
+    modèle est mal calibré → edge fictif (ex. Arabie Saoudite à 7.9 vs Uruguay).
+    """
     if edge is None:
+        return False
+    if odds is not None and odds > odds_max:
         return False
     edge_max = MAX_EDGE_BY_MARKET.get(market, _FALLBACK_EDGE_MAX)
     return edge_min <= edge <= edge_max
@@ -60,8 +67,9 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
     league_wl_1x2 = set(settings.value_bet_leagues)
     league_wl_ou = set(settings.value_bet_ou_leagues)
     league_wl_ah = set(settings.value_bet_ah_leagues)
-    # Edge min depuis la config (pas hardcodé) pour rester aligné avec le site.
+    # Edge min + plafond cote depuis la config (alignés avec le site).
     edge_min = getattr(settings, "value_bet_edge_min", 0.05)
+    odds_max = getattr(settings, "value_bet_odds_max", 5.0)
 
     result = await session.execute(text("""
         SELECT m.id, m.league, m.home_team, m.away_team, m.match_date,
@@ -97,7 +105,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("AWAY", r[15], r[7], away),
             ]:
                 edge = _actual_edge(prob, odds)
-                if _is_value(edge, "1X2", edge_min):
+                if _is_value(edge, "1X2", edge_min, odds, odds_max):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,
@@ -113,7 +121,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("UNDER", r[17], r[9], "-2.5 buts"),
             ]:
                 edge = _actual_edge(prob, odds)
-                if _is_value(edge, "OU_2_5", edge_min):
+                if _is_value(edge, "OU_2_5", edge_min, odds, odds_max):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,
@@ -130,7 +138,7 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
                 ("AH_AWAY", r[19], r[12], f"{away} ({-ah_line:+g})"),
             ]:
                 edge = _actual_edge(prob, odds)
-                if _is_value(edge, "AH", edge_min):
+                if _is_value(edge, "AH", edge_min, odds, odds_max):
                     value_bets.append({
                         "match_id": match_id, "league": league,
                         "home": home, "away": away,

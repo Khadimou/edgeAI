@@ -29,6 +29,14 @@ MAX_EDGE_BY_MARKET = {
     "AH": 0.30,
 }
 
+# Plafond de cote : pas de value bet sur les gros outsiders (favourite-longshot
+# bias — modèle mal calibré dans les queues). Lu depuis la config.
+try:
+    from app.core.config import settings as _settings
+    MAX_VALUE_BET_ODDS = _settings.value_bet_odds_max
+except Exception:
+    MAX_VALUE_BET_ODDS = 5.0
+
 
 @dataclass
 class KellyResult:
@@ -65,6 +73,18 @@ def calculate_kelly(
     # Kelly complet
     kelly_full = (prob * b - q) / b
     edge = prob * odds - 1.0
+
+    # Plafond de cote (favourite-longshot bias) : au-delà, le modèle est mal
+    # calibré dans les queues → edge fictif. On refuse les outsiders à cote élevée.
+    if odds > MAX_VALUE_BET_ODDS:
+        return KellyResult(
+            kelly_fraction=max(0, kelly_full),
+            adjusted_fraction=0,
+            recommended_amount=0,
+            edge=edge,
+            is_value_bet=False,
+            reason=f"Cote {odds:.1f} > {MAX_VALUE_BET_ODDS:.1f} (outsider, modèle peu fiable)",
+        )
 
     if kelly_full <= 0 or edge < MIN_EDGE_THRESHOLD:
         return KellyResult(

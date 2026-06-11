@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     value_bet_edge_min: float = 0.05
     value_bet_edge_max: float = 0.20
 
+    # Plafond de cote pour les value bets (favourite-longshot bias).
+    # Au-delà, le modèle est mal calibré dans les queues : une erreur de proba de
+    # 2-3 pts crée un edge énorme mais fictif. Les bookmakers gonflent en plus les
+    # cotes des outsiders. On refuse donc les value bets à cote > 5.0 (ex. victoire
+    # d'un outsider à 7.9). 5.0 ≈ proba implicite 20% : en dessous, pas un longshot.
+    value_bet_odds_max: float = 5.0
+
     class Config:
         env_file = ".env"
         case_sensitive = False
