@@ -151,8 +151,21 @@ async def _find_current_value_bets(session: AsyncSession, settings) -> list[dict
 
 
 def _vb_key(vb: dict) -> str:
-    """Clé unique pour le dedup Redis."""
+    """Clé unique pour le dedup Redis (par outcome exact)."""
     return f"vb:notified:{vb['match_id']}:{vb['market']}:{vb['outcome']}"
+
+
+def _match_lock_key(match_id: str) -> str:
+    """Verrou AU NIVEAU DU MATCH : une fois qu'un match a reçu une reco (n'importe
+    quel camp/marché), on ne le recommande plus jamais. Empêche de publier des
+    paris contradictoires sur le même match quand les cotes bougent (ex: Sénégal
+    vainqueur lundi puis Norvège vainqueur mardi → décrédibilisant)."""
+    return f"vb:match_locked:{match_id}"
+
+
+# Le verrou doit survivre jusqu'au coup d'envoi : la fenêtre de détection est de
+# 7 jours, on verrouille 14 jours pour couvrir match + marge.
+MATCH_LOCK_TTL = 14 * 24 * 3600
 
 
 def _build_email_html(bets: list[dict], app_url: str) -> str:
@@ -293,10 +306,21 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     if not current_bets:
         return 0
 
-    # Dedup via Redis : ne notifie que les nouveaux. NE PAS marquer notifié ici —
-    # seulement après l'envoi réussi de l'email, sinon un échec Brevo déduplique
-    # à jamais le bet (bug : marqué notifié alors que jamais envoyé).
-    new_bets = [vb for vb in current_bets if not await redis.get(_vb_key(vb))]
+    # 1) Exclure les matchs DÉJÀ recommandés (verrou match-level) : empêche de
+    #    publier le camp opposé un autre jour si l'edge bascule.
+    unlocked = []
+    for vb in current_bets:
+        if not await redis.get(_match_lock_key(vb["match_id"])):
+            unlocked.append(vb)
+
+    # 2) Au plus UNE reco par match dans ce run : on garde le meilleur edge.
+    #    (un match peut flagger HOME 1X2 ET Over en même temps → on n'en publie qu'un)
+    best_per_match: dict[str, dict] = {}
+    for vb in unlocked:
+        mid = vb["match_id"]
+        if mid not in best_per_match or vb["edge"] > best_per_match[mid]["edge"]:
+            best_per_match[mid] = vb
+    new_bets = list(best_per_match.values())
 
     if not new_bets:
         log.info("notifications_nothing_new", current=len(current_bets))
@@ -310,9 +334,10 @@ async def notify_new_value_bets(session: AsyncSession, redis, settings) -> int:
     html = _build_email_html(new_bets, app_url)
     ok = await _send_brevo_email(api_key, from_email, to_email, subject, html)
     if ok:
-        # Marque notifié SEULEMENT après envoi réussi
+        # Marque notifié SEULEMENT après envoi réussi : clé outcome + verrou match.
         for vb in new_bets:
             await redis.setex(_vb_key(vb), NOTIFIED_KEY_TTL, "1")
+            await redis.setex(_match_lock_key(vb["match_id"]), MATCH_LOCK_TTL, vb["outcome"])
         log.info("notifications_sent", count=len(new_bets), total=len(current_bets))
         # Publication Instagram : meilleur value bet (edge le plus élevé)
         best = max(new_bets, key=lambda b: b["edge"])
